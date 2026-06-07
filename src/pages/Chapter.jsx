@@ -73,11 +73,6 @@ export default function Chapter() {
   const allSubsections = chapter.sections.flatMap((section) => section.subsections);
   const savedChapterState = chapterState[chapter.id] ?? {};
 
-  const [selectedSubsectionId, setSelectedSubsectionId] = useState(
-    allSubsections.some((item) => item.id === savedChapterState.selectedSubsectionId)
-      ? savedChapterState.selectedSubsectionId
-      : allSubsections[0].id
-  );
   const [activeTab, setActiveTab] = useState(savedChapterState.activeTab ?? "overview");
   const [cardMode, setCardMode] = useState(savedChapterState.cardMode ?? "flip");
   const [quizMode, setQuizMode] = useState(savedChapterState.quizMode ?? "objective");
@@ -118,9 +113,7 @@ export default function Chapter() {
   );
   const [cardSubjectiveLoadingId, setCardSubjectiveLoadingId] = useState(null);
   const [subjectiveId, setSubjectiveId] = useState(
-    savedChapterState.subjectiveId ??
-      chapter.subjectiveQuizzes.find((item) => item.subsectionId === allSubsections[0].id)?.id ??
-      chapter.subjectiveQuizzes[0].id
+    savedChapterState.subjectiveId ?? chapter.subjectiveQuizzes[0]?.id ?? ""
   );
   const [subjectiveAnswers, setSubjectiveAnswers] = useState(
     savedChapterState.subjectiveAnswers ?? {}
@@ -133,21 +126,18 @@ export default function Chapter() {
   const [mascotFeedback, setMascotFeedback] = useState(null);
   const [rewardToasts, setRewardToasts] = useState([]);
 
-  const selectedSubsection =
-    allSubsections.find((item) => item.id === selectedSubsectionId) ?? allSubsections[0];
-  const selectedSection =
-    chapter.sections.find((section) =>
-      section.subsections.some((subsection) => subsection.id === selectedSubsection.id)
-    ) ?? chapter.sections[0];
-  const selectedFlashcards = selectedSubsection.flashcards.map((card, index) => ({
-    ...card,
-    id: `${selectedSubsection.id}-flash-${index}`,
-    subsectionTitle: selectedSection.title,
-  }));
-  const selectedQuizzes = quizzes.filter((quiz) => quiz.subsectionId === selectedSubsection.id);
-  const selectedSubjectives = chapter.subjectiveQuizzes.filter(
-    (item) => item.subsectionId === selectedSubsection.id
+  const selectedFlashcards = chapter.sections.flatMap((section) =>
+    section.subsections.flatMap((subsection) =>
+      subsection.flashcards.map((card, index) => ({
+        ...card,
+        id: `${subsection.id}-flash-${index}`,
+        subsectionId: subsection.id,
+        subsectionTitle: subsection.title,
+      }))
+    )
   );
+  const selectedQuizzes = quizzes.filter((quiz) => quiz.chapterId === chapter.id);
+  const selectedSubjectives = chapter.subjectiveQuizzes;
   const activeObjectiveSubsection =
     allSubsections.find((item) => item.id === objectiveModalId) ?? null;
   const currentQuiz = selectedQuizzes[quizIndex] ?? selectedQuizzes[0];
@@ -268,7 +258,6 @@ export default function Chapter() {
   useEffect(() => {
     updateChapterState(chapter.id, (previousState) => ({
       ...previousState,
-      selectedSubsectionId,
       activeTab,
       cardMode,
       quizMode,
@@ -307,15 +296,13 @@ export default function Chapter() {
     objectiveHintMap,
     quizIndex,
     quizMode,
-    selectedSubsectionId,
     subjectiveAnswers,
     subjectiveFeedbackMap,
     subjectiveId,
     updateChapterState,
   ]);
 
-  const isBlankQuestionCorrect = (question, index) => {
-    const key = `${selectedSubsection.id}-${index}`;
+  const isBlankQuestionCorrect = (question, key) => {
     const values = blankAnswers[key] ?? [];
 
     return question.answers.every(
@@ -325,7 +312,6 @@ export default function Chapter() {
   };
 
   const openObjectivePad = (subsection) => {
-    setSelectedSubsectionId(subsection.id);
     setObjectiveModalId(subsection.id);
   };
 
@@ -358,7 +344,7 @@ export default function Chapter() {
     }
 
     if (nextMode === "subjective") {
-      setSubjectiveId(selectedSubjectives[0]?.id ?? chapter.subjectiveQuizzes[0]?.id ?? "");
+      setSubjectiveId(chapter.subjectiveQuizzes[0]?.id ?? "");
     }
   };
 
@@ -679,57 +665,7 @@ export default function Chapter() {
       </div>
 
       <div className="chapter-layout">
-        <aside className="chapter-sidebar">
-          <div className="sidebar-card">
-            <p className="sidebar-title">소단원 선택</p>
-            {chapter.sections.map((section) => (
-              <div className="sidebar-group" key={section.id}>
-                <strong>{section.title}</strong>
-                {section.subsections.map((subsection) => (
-                  <button
-                    className={
-                      subsection.id === selectedSubsection.id
-                        ? "sidebar-item active"
-                        : "sidebar-item"
-                    }
-                    key={subsection.id}
-                    onClick={() => {
-                      setSelectedSubsectionId(subsection.id);
-                      setActiveTab("overview");
-                      setCardIndex(0);
-                      setCardObjectiveIndex(0);
-                      setCardSubjectiveIndex(0);
-                      setCardFlipped(false);
-                      setQuizIndex(0);
-                      setQuizSelection(null);
-                      setQuizChecked(false);
-                      setQuizMode("objective");
-                      const subsectionSubjectives = chapter.subjectiveQuizzes.filter(
-                        (item) => item.subsectionId === subsection.id
-                      );
-                      setSubjectiveId(subsectionSubjectives[0]?.id ?? "");
-                      setSubjectiveFeedbackMap((prev) => {
-                        const next = { ...prev };
-                        subsectionSubjectives.forEach((item) => {
-                          if (!(item.id in next)) {
-                            next[item.id] = null;
-                          }
-                        });
-                        return next;
-                      });
-                    }}
-                    type="button"
-                  >
-                    <span>{subsection.title}</span>
-                    <small>{subsection.page}</small>
-                  </button>
-                ))}
-              </div>
-            ))}
-          </div>
-        </aside>
-
-        <main className="chapter-main">
+        <main className="chapter-main chapter-main--full">
           <section className="tabs-card">
             <div className="tab-row">
               {topTabs.map((tab) => {
@@ -793,85 +729,95 @@ export default function Chapter() {
 
             {activeTab === "blanks" && (
               <div className="tab-panel">
-                {selectedSubsection.fillInTheBlanks.map((item, index) => {
-                  const key = `${selectedSubsection.id}-${index}`;
-                  const userValues = blankAnswers[key] ?? [];
-                  const checked = blankChecks[key] ?? false;
-                  const isCorrect = isBlankQuestionCorrect(item, index);
-                  const segments = item.text.split(/\[(.*?)\]/g);
+                {chapter.sections.map((section) => (
+                  <section className="content-group" key={section.id}>
+                    <h3 className="content-group-title">{section.title}</h3>
+                    {section.subsections.map((subsection) => (
+                      <div className="content-subgroup" key={subsection.id}>
+                        <h4 className="content-subgroup-title">{subsection.title}</h4>
+                        {subsection.fillInTheBlanks.map((item, index) => {
+                          const key = `${subsection.id}-${index}`;
+                          const userValues = blankAnswers[key] ?? [];
+                          const checked = blankChecks[key] ?? false;
+                          const isCorrect = isBlankQuestionCorrect(item, key);
+                          const segments = item.text.split(/\[(.*?)\]/g);
 
-                  return (
-                    <article className="blank-card" key={key}>
-                      <div className="blank-sentence">
-                        <strong>Q{index + 1}.</strong>
-                        <p>
-                          {segments.map((segment, segmentIndex) =>
-                            segmentIndex % 2 === 0 ? (
-                              <span key={`${key}-text-${segmentIndex}`}>{segment}</span>
-                            ) : (
-                              <input
-                                className="inline-blank-input"
-                                key={`${key}-answer-${segmentIndex}`}
-                                onChange={(event) => {
-                                  const answerIndex = Math.floor(segmentIndex / 2);
-                                  setBlankAnswers((prev) => {
-                                    const nextValues = [...(prev[key] ?? [])];
-                                    nextValues[answerIndex] = event.target.value;
-                                    return {
+                          return (
+                            <article className="blank-card" key={key}>
+                              <div className="blank-sentence">
+                                <strong>Q{index + 1}.</strong>
+                                <p>
+                                  {segments.map((segment, segmentIndex) =>
+                                    segmentIndex % 2 === 0 ? (
+                                      <span key={`${key}-text-${segmentIndex}`}>{segment}</span>
+                                    ) : (
+                                      <input
+                                        className="inline-blank-input"
+                                        key={`${key}-answer-${segmentIndex}`}
+                                        onChange={(event) => {
+                                          const answerIndex = Math.floor(segmentIndex / 2);
+                                          setBlankAnswers((prev) => {
+                                            const nextValues = [...(prev[key] ?? [])];
+                                            nextValues[answerIndex] = event.target.value;
+                                            return {
+                                              ...prev,
+                                              [key]: nextValues,
+                                            };
+                                          });
+                                          setBlankChecks((prev) => ({
+                                            ...prev,
+                                            [key]: false,
+                                          }));
+                                        }}
+                                        placeholder="정답"
+                                        value={userValues[Math.floor(segmentIndex / 2)] ?? ""}
+                                      />
+                                    )
+                                  )}
+                                </p>
+                              </div>
+                              <div className="blank-actions">
+                                <button
+                                  className="ghost-button"
+                                  onClick={() => {
+                                    setBlankChecks((prev) => ({
                                       ...prev,
-                                      [key]: nextValues,
-                                    };
-                                  });
-                                  setBlankChecks((prev) => ({
-                                    ...prev,
-                                    [key]: false,
-                                  }));
-                                }}
-                                placeholder="정답"
-                                value={userValues[Math.floor(segmentIndex / 2)] ?? ""}
-                              />
-                            )
-                          )}
-                        </p>
-                      </div>
-                      <div className="blank-actions">
-                        <button
-                          className="ghost-button"
-                          onClick={() => {
-                            setBlankChecks((prev) => ({
-                              ...prev,
-                              [key]: true,
-                            }));
-                            setBlankAnswers((prev) => {
-                              const nextValues = [...(prev[key] ?? [])];
-                              const correctedValues = item.answers.map((answer, answerIndex) => {
-                                const currentValue = nextValues[answerIndex] ?? "";
-                                return currentValue.trim().toLowerCase() === answer.trim().toLowerCase()
-                                  ? currentValue
-                                  : answer;
-                              });
+                                      [key]: true,
+                                    }));
+                                    setBlankAnswers((prev) => {
+                                      const nextValues = [...(prev[key] ?? [])];
+                                      const correctedValues = item.answers.map((answer, answerIndex) => {
+                                        const currentValue = nextValues[answerIndex] ?? "";
+                                        return currentValue.trim().toLowerCase() === answer.trim().toLowerCase()
+                                          ? currentValue
+                                          : answer;
+                                      });
 
-                              return {
-                                ...prev,
-                                [key]: correctedValues,
-                              };
-                            });
-                          }}
-                          type="button"
-                        >
-                          정답 확인
-                        </button>
-                        <span
-                          className={
-                            checked && isCorrect ? "answer-chip correct" : "answer-chip"
-                          }
-                        >
-                          {checked ? (isCorrect ? "정답" : "다시 확인") : "작성 중"}
-                        </span>
+                                      return {
+                                        ...prev,
+                                        [key]: correctedValues,
+                                      };
+                                    });
+                                  }}
+                                  type="button"
+                                >
+                                  정답 확인
+                                </button>
+                                <span
+                                  className={
+                                    checked && isCorrect ? "answer-chip correct" : "answer-chip"
+                                  }
+                                >
+                                  {checked ? (isCorrect ? "정답" : "다시 확인") : "작성 중"}
+                                </span>
+                              </div>
+                            </article>
+                          );
+                        })}
                       </div>
-                    </article>
-                  );
-                })}
+                    ))}
+                  </section>
+                ))}
               </div>
             )}
 
@@ -895,7 +841,7 @@ export default function Chapter() {
                 {cardMode === "flip" && currentStudyCard && (
                   <div className="card-study-panel">
                     <div className="card-study-meta">
-                      <span>{selectedSection.title} 카드 수: {selectedFlashcards.length}장</span>
+                      <span>{chapter.title} 카드 수: {selectedFlashcards.length}장</span>
                       <span>
                         진행률: {cardIndex + 1} / {selectedFlashcards.length}
                       </span>
@@ -905,7 +851,7 @@ export default function Chapter() {
                       onClick={() => setCardFlipped((prev) => !prev)}
                       type="button"
                     >
-                      <span>{currentStudyCard.sectionTitle}</span>
+                      <span>{currentStudyCard.subsectionTitle}</span>
                       <strong>
                         {cardFlipped ? currentStudyCard.definition : currentStudyCard.term}
                       </strong>
