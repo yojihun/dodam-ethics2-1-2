@@ -23,19 +23,8 @@ import {
 } from "../utils/soundEffects";
 
 const topTabs = ["overview", "blanks", "cards", "quiz"];
-const cardModes = ["flip", "memory", "objective", "subjective"];
+const cardModes = ["flip", "objective", "subjective"];
 const quizModes = ["objective", "subjective"];
-
-const shuffle = (items) => {
-  const next = [...items];
-
-  for (let index = next.length - 1; index > 0; index -= 1) {
-    const randomIndex = Math.floor(Math.random() * (index + 1));
-    [next[index], next[randomIndex]] = [next[randomIndex], next[index]];
-  }
-
-  return next;
-};
 
 const hashString = (value) =>
   value.split("").reduce((total, character, index) => total + character.charCodeAt(0) * (index + 1), 0);
@@ -50,27 +39,6 @@ const getObjectiveStatus = (feedback) => {
   }
 
   return { label: "보완이 필요한 목표", tone: "in-progress" };
-};
-
-const buildMemoryDeck = (flashcards) => {
-  const sourceCards = flashcards.slice(0, Math.min(4, flashcards.length));
-
-  return shuffle(
-    sourceCards.flatMap((card, index) => [
-      {
-        id: `term-${card.id}`,
-        pairId: `pair-${index}`,
-        type: "term",
-        content: card.term,
-      },
-      {
-        id: `definition-${card.id}`,
-        pairId: `pair-${index}`,
-        type: "definition",
-        content: card.definition,
-      },
-    ])
-  );
 };
 
 const buildCardObjectiveOptions = (currentCard, flashcards) => {
@@ -100,15 +68,6 @@ export default function Chapter() {
   const chapter = chapters.find((item) => item.id === chapterId) ?? chapters[0];
   const allSubsections = chapter.sections.flatMap((section) => section.subsections);
   const savedChapterState = chapterState[chapter.id] ?? {};
-  const initialSubsection = allSubsections[0];
-  const initialSection = chapter.sections.find((section) =>
-    section.subsections.some((subsection) => subsection.id === initialSubsection.id)
-  ) ?? chapter.sections[0];
-  const initialFlashcards = initialSubsection.flashcards.map((card, index) => ({
-    ...card,
-    id: `${initialSubsection.id}-flash-${index}`,
-    subsectionTitle: initialSection.title,
-  }));
 
   const [selectedSubsectionId, setSelectedSubsectionId] = useState(
     allSubsections.some((item) => item.id === savedChapterState.selectedSubsectionId)
@@ -138,10 +97,6 @@ export default function Chapter() {
     savedChapterState.cardSubjectiveIndex ?? 0
   );
   const [cardFlipped, setCardFlipped] = useState(false);
-  const [memoryDeck, setMemoryDeck] = useState(() => buildMemoryDeck(initialFlashcards));
-  const [openedMemoryIds, setOpenedMemoryIds] = useState([]);
-  const [matchedMemoryIds, setMatchedMemoryIds] = useState([]);
-  const [memoryAttempts, setMemoryAttempts] = useState(savedChapterState.memoryAttempts ?? 0);
   const [quizIndex, setQuizIndex] = useState(savedChapterState.quizIndex ?? 0);
   const [quizSelection, setQuizSelection] = useState(null);
   const [quizChecked, setQuizChecked] = useState(false);
@@ -321,7 +276,6 @@ export default function Chapter() {
       cardIndex,
       cardObjectiveIndex,
       cardSubjectiveIndex,
-      memoryAttempts,
       quizIndex,
       cardObjectiveSelectionMap,
       cardObjectiveCheckedMap,
@@ -344,7 +298,6 @@ export default function Chapter() {
     cardSubjectiveFeedbackMap,
     cardMode,
     chapter.id,
-    memoryAttempts,
     objectiveDrafts,
     objectiveFeedbackMap,
     objectiveHintMap,
@@ -379,13 +332,6 @@ export default function Chapter() {
     if (nextMode === "flip") {
       setCardIndex(0);
       setCardFlipped(false);
-    }
-
-    if (nextMode === "memory") {
-      setMemoryDeck(buildMemoryDeck(selectedFlashcards));
-      setOpenedMemoryIds([]);
-      setMatchedMemoryIds([]);
-      setMemoryAttempts(0);
     }
 
     if (nextMode === "objective") {
@@ -530,37 +476,6 @@ export default function Chapter() {
       console.error(error);
     } finally {
       setObjectiveHintLoadingId(null);
-    }
-  };
-
-  const handleMemoryCardClick = (card) => {
-    if (openedMemoryIds.includes(card.id) || matchedMemoryIds.includes(card.id)) {
-      return;
-    }
-
-    if (openedMemoryIds.length === 2) {
-      return;
-    }
-
-    const nextOpened = [...openedMemoryIds, card.id];
-    setOpenedMemoryIds(nextOpened);
-
-    if (nextOpened.length === 2) {
-      setMemoryAttempts((prev) => prev + 1);
-      const openedCards = nextOpened.map((id) => memoryDeck.find((item) => item.id === id));
-      const isMatch = openedCards[0]?.pairId === openedCards[1]?.pairId;
-
-      if (isMatch) {
-        setMatchedMemoryIds((prev) => [...prev, ...nextOpened]);
-        setTimeout(() => {
-          setOpenedMemoryIds([]);
-        }, 260);
-        return;
-      }
-
-      setTimeout(() => {
-        setOpenedMemoryIds([]);
-      }, 700);
     }
   };
 
@@ -777,18 +692,6 @@ export default function Chapter() {
                       setCardObjectiveIndex(0);
                       setCardSubjectiveIndex(0);
                       setCardFlipped(false);
-                      setMemoryDeck(
-                        buildMemoryDeck(
-                          subsection.flashcards.map((card, index) => ({
-                            ...card,
-                            id: `${subsection.id}-flash-${index}`,
-                            subsectionTitle: section.title,
-                          }))
-                        )
-                      );
-                      setOpenedMemoryIds([]);
-                      setMatchedMemoryIds([]);
-                      setMemoryAttempts(0);
                       setQuizIndex(0);
                       setQuizSelection(null);
                       setQuizChecked(false);
@@ -975,7 +878,6 @@ export default function Chapter() {
                       type="button"
                     >
                       {mode === "flip" && "카드 뒤집기"}
-                      {mode === "memory" && "메모리 매칭"}
                       {mode === "objective" && "선택형 퀴즈"}
                       {mode === "subjective" && "서술형 퀴즈"}
                     </button>
@@ -1028,47 +930,6 @@ export default function Chapter() {
                       >
                         다음 카드
                       </button>
-                    </div>
-                  </div>
-                )}
-
-                {cardMode === "memory" && (
-                  <div className="card-study-panel">
-                    <div className="card-study-meta">
-                      <span>매칭 시도 횟수: {memoryAttempts}회</span>
-                      <button
-                        className="ghost-button"
-                        onClick={() => resetCardProgress("memory")}
-                        type="button"
-                      >
-                        새 게임 시작
-                      </button>
-                    </div>
-                    <div className="memory-grid">
-                      {memoryDeck.map((card) => {
-                        const opened =
-                          openedMemoryIds.includes(card.id) ||
-                          matchedMemoryIds.includes(card.id);
-                        const matched = matchedMemoryIds.includes(card.id);
-
-                        return (
-                          <button
-                            className={
-                              matched
-                                ? "memory-card matched"
-                                : opened
-                                  ? "memory-card open"
-                                  : "memory-card"
-                            }
-                            key={card.id}
-                            onClick={() => handleMemoryCardClick(card)}
-                            type="button"
-                          >
-                            <span>{opened ? card.type === "term" ? "용어" : "설명" : "?"}</span>
-                            <strong>{opened ? card.content : "?"}</strong>
-                          </button>
-                        );
-                      })}
                     </div>
                   </div>
                 )}
@@ -1516,9 +1377,7 @@ export default function Chapter() {
               alt="도덕 길잡이 캐릭터"
               className="feedback-character"
               src={
-                mascotFeedback.type === "fail"
-                  ? "/images/ethics-guide-mascot-fail.png"
-                  : "/images/ethics-guide-mascot-success.png"
+                "/images/ethics-guide-mascot.svg"
               }
             />
             <div className="feedback-line">{mascotFeedback.text}</div>

@@ -315,8 +315,7 @@ p {
 }
 
 .chapter-card,
-.keypoint-card,
-.memory-card {
+.keypoint-card {
   border-radius: 22px;
   padding: 20px;
 }
@@ -1009,43 +1008,6 @@ p {
   margin-top: 14px;
 }
 
-.memory-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.memory-card {
-  min-height: 170px;
-  padding: 18px;
-  border-radius: 22px;
-  border: 1px solid rgba(97, 74, 46, 0.14);
-  background: rgba(255, 255, 255, 0.66);
-  color: var(--ink);
-  display: grid;
-  place-items: center;
-  text-align: center;
-}
-
-.memory-card span {
-  color: var(--muted);
-  font-size: 0.85rem;
-}
-
-.memory-card strong {
-  font-size: 1.05rem;
-  line-height: 1.5;
-}
-
-.memory-card.open {
-  background: linear-gradient(180deg, rgba(255, 252, 245, 1), rgba(237, 228, 214, 0.96));
-}
-
-.memory-card.matched {
-  background: linear-gradient(180deg, rgba(225, 248, 240, 0.98), rgba(214, 239, 229, 0.96));
-  border-color: rgba(31, 138, 97, 0.35);
-}
-
 .quiz-panel,
 .subjective-panel {
   max-width: 760px;
@@ -1202,8 +1164,7 @@ p {
   .chapter-card-grid,
   .card-check-grid,
   .flashcard-grid,
-  .keypoint-grid,
-  .memory-grid {
+  .keypoint-grid {
     grid-template-columns: 1fr;
   }
 
