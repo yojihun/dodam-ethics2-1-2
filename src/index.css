@@ -533,65 +533,50 @@ p {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(20, 31, 44, 0.34);
-  backdrop-filter: blur(10px);
+  background: rgba(20, 31, 44, 0.22);
+  backdrop-filter: blur(6px);
   animation: feedback-fade-in 180ms ease;
 }
 
 .feedback-modal {
-  width: min(680px, calc(100vw - 28px));
-  min-height: 520px;
+  width: min(520px, calc(100vw - 28px));
   display: grid;
   justify-items: center;
   align-content: center;
-  gap: 14px;
-  padding: 30px 32px 28px;
-  border-radius: 36px;
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  box-shadow: 0 32px 80px rgba(18, 30, 46, 0.28);
+  gap: 10px;
+  padding: 0;
+  border: none;
+  box-shadow: none;
   text-align: center;
+  background: transparent;
 }
 
 .feedback-modal--success {
-  background:
-    radial-gradient(circle at top, rgba(145, 214, 184, 0.45), transparent 45%),
-    linear-gradient(180deg, rgba(255, 252, 246, 0.98), rgba(244, 255, 249, 0.98));
   animation: feedback-bounce-in 540ms cubic-bezier(0.2, 0.9, 0.2, 1);
 }
 
 .feedback-modal--fail {
-  background:
-    radial-gradient(circle at top, rgba(255, 197, 173, 0.42), transparent 45%),
-    linear-gradient(180deg, rgba(255, 252, 246, 0.98), rgba(255, 246, 243, 0.98));
   animation: feedback-shake-in 520ms ease;
 }
 
 .feedback-modal--hint {
-  background:
-    radial-gradient(circle at top, rgba(232, 178, 92, 0.34), transparent 45%),
-    linear-gradient(180deg, rgba(255, 252, 246, 0.98), rgba(255, 249, 236, 0.98));
   animation: feedback-bounce-in 480ms cubic-bezier(0.2, 0.9, 0.2, 1);
 }
 
 .feedback-character {
-  width: min(340px, 62vw);
-  max-height: 360px;
+  width: min(360px, 68vw);
+  max-height: 420px;
   object-fit: contain;
-  filter: drop-shadow(0 18px 36px rgba(29, 48, 74, 0.18));
+  filter: drop-shadow(0 22px 44px rgba(29, 48, 74, 0.24));
 }
 
 .feedback-line {
-  font-size: clamp(2rem, 4vw, 3rem);
+  font-size: clamp(2.1rem, 4.8vw, 3.4rem);
   line-height: 1.08;
   font-weight: 900;
   letter-spacing: -0.05em;
-}
-
-.feedback-subline {
-  margin: 0;
-  color: var(--muted);
-  font-size: 1rem;
-  font-weight: 700;
+  color: #1e2c3a;
+  text-shadow: 0 8px 24px rgba(255, 255, 255, 0.55);
 }
 
 .reward-toast-stack {
@@ -1196,8 +1181,7 @@ p {
   }
 
   .feedback-modal {
-    min-height: 440px;
-    padding: 24px 20px 22px;
+    width: min(440px, calc(100vw - 24px));
   }
 
   .feedback-character {
@@ -1235,7 +1219,6 @@ p {
   }
 
   .feedback-modal {
-    min-height: 400px;
     gap: 10px;
   }
 

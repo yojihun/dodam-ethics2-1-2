@@ -46,6 +46,10 @@ const buildCardObjectiveOptions = (currentCard, flashcards) => {
     return [];
   }
 
+  if (currentCard.objectiveOptions?.length) {
+    return currentCard.objectiveOptions;
+  }
+
   const distractors = flashcards
     .filter((card) => card.term !== currentCard.term)
     .map((card) => card.term)
@@ -554,7 +558,7 @@ export default function Chapter() {
 
     if (
       currentCardObjectiveOptions[currentCardObjectiveSelection] ===
-      currentCardObjectiveCard.term
+      (currentCardObjectiveCard.objectiveAnswer ?? currentCardObjectiveCard.term)
     ) {
       playCorrectSound();
       enqueueRewardToasts(rewardProgress({ conceptLabel: "개념 확인 완료" }));
@@ -578,14 +582,17 @@ export default function Chapter() {
 
       if (hasGeminiKey()) {
         result = await gradeSubjectiveAnswerWithGemini(
-          `${currentCardSubjectiveCard.term}의 뜻을 자신의 말로 설명하시오.`,
-          currentCardSubjectiveCard.definition,
+          currentCardSubjectiveCard.subjectivePrompt ??
+            `${currentCardSubjectiveCard.term}의 뜻을 자신의 말로 설명하시오.`,
+          currentCardSubjectiveCard.subjectiveExpectedAnswer ??
+            currentCardSubjectiveCard.definition,
           currentCardSubjectiveAnswer
         );
         setGradingMode("gemini");
       } else {
         result = gradeSubjectiveAnswer(
-          currentCardSubjectiveCard.definition,
+          currentCardSubjectiveCard.subjectiveExpectedAnswer ??
+            currentCardSubjectiveCard.definition,
           currentCardSubjectiveAnswer
         );
         setGradingMode("local");
@@ -606,7 +613,8 @@ export default function Chapter() {
       }
     } catch (error) {
       const result = gradeSubjectiveAnswer(
-        currentCardSubjectiveCard.definition,
+        currentCardSubjectiveCard.subjectiveExpectedAnswer ??
+          currentCardSubjectiveCard.definition,
         currentCardSubjectiveAnswer
       );
       setCardSubjectiveFeedbackMap((prev) => ({
@@ -944,16 +952,24 @@ export default function Chapter() {
                     </div>
                     <div className="panel-block quiz-question-card">
                       <h3>다음 설명에 해당하는 도덕 개념은 무엇인가요?</h3>
-                      <p className="card-check-prompt">"{currentCardObjectiveCard.definition}"</p>
+                      <p className="card-check-prompt">
+                        {currentCardObjectiveCard.objectivePrompt ??
+                          `"${currentCardObjectiveCard.definition}"`}
+                      </p>
                       <div className="option-list">
                         {currentCardObjectiveOptions.map((option, index) => {
                           const selected = currentCardObjectiveSelection === index;
                           const correct =
-                            currentCardObjectiveChecked && option === currentCardObjectiveCard.term;
+                            currentCardObjectiveChecked &&
+                            option ===
+                              (currentCardObjectiveCard.objectiveAnswer ??
+                                currentCardObjectiveCard.term);
                           const wrong =
                             currentCardObjectiveChecked &&
                             selected &&
-                            option !== currentCardObjectiveCard.term;
+                            option !==
+                              (currentCardObjectiveCard.objectiveAnswer ??
+                                currentCardObjectiveCard.term);
                           const className = correct
                             ? "option-button correct"
                             : wrong
@@ -1015,7 +1031,10 @@ export default function Chapter() {
                       </span>
                     </div>
                     <div className="panel-block">
-                      <h3>{currentCardSubjectiveCard.term}의 뜻을 자신의 말로 설명해 보세요.</h3>
+                      <h3>
+                        {currentCardSubjectiveCard.subjectivePrompt ??
+                          `${currentCardSubjectiveCard.term}의 뜻을 자신의 말로 설명해 보세요.`}
+                      </h3>
                       <p className="card-check-caption">
                         카드에서 배운 뜻을 떠올려 2~4문장으로 써 보세요.
                       </p>
@@ -1027,7 +1046,7 @@ export default function Chapter() {
                             [currentCardSubjectiveCard.id]: event.target.value,
                           }))
                         }
-                        placeholder={`${currentCardSubjectiveCard.term}의 뜻과 특징을 정리해 보세요.`}
+                        placeholder={`${currentCardSubjectiveCard.term}과 관련된 핵심 내용을 자기 말로 정리해 보세요.`}
                         value={currentCardSubjectiveAnswer}
                       />
                       <div className="inline-actions">
@@ -1381,13 +1400,6 @@ export default function Chapter() {
               }
             />
             <div className="feedback-line">{mascotFeedback.text}</div>
-            <p className="feedback-subline">
-              {mascotFeedback.type === "success"
-                ? "핵심 개념을 정확히 잡았어요"
-                : mascotFeedback.type === "hint"
-                  ? "힌트를 보고 바로 다시 도전해요"
-                  : "조금만 더 다듬으면 돼요"}
-            </p>
           </div>
         </div>
       )}
