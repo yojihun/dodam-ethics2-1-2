@@ -29,6 +29,17 @@ const quizModes = ["objective", "subjective"];
 const hashString = (value) =>
   value.split("").reduce((total, character, index) => total + character.charCodeAt(0) * (index + 1), 0);
 
+const shuffleItems = (items) => {
+  const next = [...items];
+
+  for (let index = next.length - 1; index > 0; index -= 1) {
+    const randomIndex = Math.floor(Math.random() * (index + 1));
+    [next[index], next[randomIndex]] = [next[randomIndex], next[index]];
+  }
+
+  return next;
+};
+
 const getObjectiveStatus = (feedback) => {
   if (!feedback) {
     return { label: "미달성 목표", tone: "pending" };
@@ -112,6 +123,14 @@ export default function Chapter() {
     savedChapterState.cardSubjectiveFeedbackMap ?? {}
   );
   const [cardSubjectiveLoadingId, setCardSubjectiveLoadingId] = useState(null);
+  const [cardObjectiveOrder, setCardObjectiveOrder] = useState(
+    savedChapterState.cardObjectiveOrder ?? []
+  );
+  const [cardSubjectiveOrder, setCardSubjectiveOrder] = useState(
+    savedChapterState.cardSubjectiveOrder ?? []
+  );
+  const [quizOrder, setQuizOrder] = useState(savedChapterState.quizOrder ?? []);
+  const [subjectiveOrder, setSubjectiveOrder] = useState(savedChapterState.subjectiveOrder ?? []);
   const [subjectiveId, setSubjectiveId] = useState(
     savedChapterState.subjectiveId ?? chapter.subjectiveQuizzes[0]?.id ?? ""
   );
@@ -138,16 +157,35 @@ export default function Chapter() {
   );
   const selectedQuizzes = quizzes.filter((quiz) => quiz.chapterId === chapter.id);
   const selectedSubjectives = chapter.subjectiveQuizzes;
+  const flashcardMap = new Map(selectedFlashcards.map((card) => [card.id, card]));
+  const quizMap = new Map(selectedQuizzes.map((quiz) => [quiz.id, quiz]));
+  const subjectiveMap = new Map(selectedSubjectives.map((quiz) => [quiz.id, quiz]));
+  const cardObjectiveCards =
+    cardObjectiveOrder.length > 0
+      ? cardObjectiveOrder.map((id) => flashcardMap.get(id)).filter(Boolean)
+      : selectedFlashcards;
+  const cardSubjectiveCards =
+    cardSubjectiveOrder.length > 0
+      ? cardSubjectiveOrder.map((id) => flashcardMap.get(id)).filter(Boolean)
+      : selectedFlashcards;
+  const randomizedQuizzes =
+    quizOrder.length > 0
+      ? quizOrder.map((id) => quizMap.get(id)).filter(Boolean)
+      : selectedQuizzes;
+  const randomizedSubjectives =
+    subjectiveOrder.length > 0
+      ? subjectiveOrder.map((id) => subjectiveMap.get(id)).filter(Boolean)
+      : selectedSubjectives;
   const activeObjectiveSubsection =
     allSubsections.find((item) => item.id === objectiveModalId) ?? null;
-  const currentQuiz = selectedQuizzes[quizIndex] ?? selectedQuizzes[0];
+  const currentQuiz = randomizedQuizzes[quizIndex] ?? randomizedQuizzes[0];
   const currentSubjective =
-    selectedSubjectives.find((item) => item.id === subjectiveId) ?? selectedSubjectives[0];
+    randomizedSubjectives.find((item) => item.id === subjectiveId) ?? randomizedSubjectives[0];
   const currentStudyCard = selectedFlashcards[cardIndex] ?? selectedFlashcards[0];
   const currentCardObjectiveCard =
-    selectedFlashcards[cardObjectiveIndex] ?? selectedFlashcards[0];
+    cardObjectiveCards[cardObjectiveIndex] ?? cardObjectiveCards[0];
   const currentCardSubjectiveCard =
-    selectedFlashcards[cardSubjectiveIndex] ?? selectedFlashcards[0];
+    cardSubjectiveCards[cardSubjectiveIndex] ?? cardSubjectiveCards[0];
   const currentCardObjectiveOptions = buildCardObjectiveOptions(
     currentCardObjectiveCard,
     selectedFlashcards
@@ -274,6 +312,10 @@ export default function Chapter() {
       cardObjectiveCheckedMap,
       cardSubjectiveAnswers,
       cardSubjectiveFeedbackMap,
+      cardObjectiveOrder,
+      cardSubjectiveOrder,
+      quizOrder,
+      subjectiveOrder,
       subjectiveId,
       subjectiveAnswers,
       subjectiveFeedbackMap,
@@ -289,18 +331,46 @@ export default function Chapter() {
     cardSubjectiveIndex,
     cardSubjectiveAnswers,
     cardSubjectiveFeedbackMap,
+    cardObjectiveOrder,
+    cardSubjectiveOrder,
     cardMode,
     chapter.id,
     objectiveDrafts,
     objectiveFeedbackMap,
     objectiveHintMap,
     quizIndex,
+    quizOrder,
     quizMode,
+    subjectiveOrder,
     subjectiveAnswers,
     subjectiveFeedbackMap,
     subjectiveId,
     updateChapterState,
   ]);
+
+  useEffect(() => {
+    const nextCardObjectiveOrder = shuffleItems(selectedFlashcards.map((card) => card.id));
+    const nextCardSubjectiveOrder = shuffleItems(selectedFlashcards.map((card) => card.id));
+    const nextQuizOrder = shuffleItems(selectedQuizzes.map((quiz) => quiz.id));
+    const nextSubjectiveOrder = shuffleItems(selectedSubjectives.map((quiz) => quiz.id));
+
+    const frameId = window.requestAnimationFrame(() => {
+      setCardIndex(0);
+      setCardFlipped(false);
+      setCardObjectiveIndex(0);
+      setCardSubjectiveIndex(0);
+      setQuizIndex(0);
+      setQuizSelection(null);
+      setQuizChecked(false);
+      setCardObjectiveOrder(nextCardObjectiveOrder);
+      setCardSubjectiveOrder(nextCardSubjectiveOrder);
+      setQuizOrder(nextQuizOrder);
+      setSubjectiveOrder(nextSubjectiveOrder);
+      setSubjectiveId(nextSubjectiveOrder[0] ?? "");
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [chapter.id, selectedFlashcards, selectedQuizzes, selectedSubjectives]);
 
   const isBlankQuestionCorrect = (question, key) => {
     const values = blankAnswers[key] ?? [];
@@ -325,10 +395,12 @@ export default function Chapter() {
     }
 
     if (nextMode === "objective") {
+      setCardObjectiveOrder(shuffleItems(selectedFlashcards.map((card) => card.id)));
       setCardObjectiveIndex(0);
     }
 
     if (nextMode === "subjective") {
+      setCardSubjectiveOrder(shuffleItems(selectedFlashcards.map((card) => card.id)));
       setCardSubjectiveIndex(0);
     }
   };
@@ -338,13 +410,16 @@ export default function Chapter() {
     setQuizMode(nextMode);
 
     if (nextMode === "objective") {
+      setQuizOrder(shuffleItems(selectedQuizzes.map((quiz) => quiz.id)));
       setQuizIndex(0);
       setQuizSelection(null);
       setQuizChecked(false);
     }
 
     if (nextMode === "subjective") {
-      setSubjectiveId(chapter.subjectiveQuizzes[0]?.id ?? "");
+      const nextSubjectiveOrder = shuffleItems(selectedSubjectives.map((quiz) => quiz.id));
+      setSubjectiveOrder(nextSubjectiveOrder);
+      setSubjectiveId(nextSubjectiveOrder[0] ?? "");
     }
   };
 
@@ -892,7 +967,7 @@ export default function Chapter() {
                   <div className="card-study-panel quiz-panel">
                     <div className="card-study-meta">
                       <span>
-                        카드 선택형 문항: {cardObjectiveIndex + 1} / {selectedFlashcards.length}
+                        카드 선택형 문항: {cardObjectiveIndex + 1} / {cardObjectiveCards.length}
                       </span>
                       <span>현재 점검: 카드 개념 선택형 확인</span>
                     </div>
@@ -954,7 +1029,7 @@ export default function Chapter() {
                           className="ghost-button"
                           onClick={() => {
                             setCardObjectiveIndex((prev) =>
-                              Math.min(prev + 1, selectedFlashcards.length - 1)
+                              Math.min(prev + 1, cardObjectiveCards.length - 1)
                             );
                           }}
                           type="button"
@@ -970,7 +1045,7 @@ export default function Chapter() {
                   <div className="card-study-panel subjective-panel">
                     <div className="card-study-meta">
                       <span>
-                        카드 서술형 문항: {cardSubjectiveIndex + 1} / {selectedFlashcards.length}
+                        카드 서술형 문항: {cardSubjectiveIndex + 1} / {cardSubjectiveCards.length}
                       </span>
                       <span>
                         채점: {gradingMode === "gemini" ? "Gemini AI" : "로컬 기준"}
@@ -1013,7 +1088,7 @@ export default function Chapter() {
                           className="ghost-button"
                           onClick={() => {
                             setCardSubjectiveIndex((prev) =>
-                              Math.min(prev + 1, selectedFlashcards.length - 1)
+                              Math.min(prev + 1, cardSubjectiveCards.length - 1)
                             );
                           }}
                           type="button"
@@ -1054,7 +1129,7 @@ export default function Chapter() {
                   <div className="card-study-panel quiz-panel">
                     <div className="card-study-meta">
                       <span>
-                        테스트 문항: {quizIndex + 1} / {selectedQuizzes.length}
+                        테스트 문항: {quizIndex + 1} / {randomizedQuizzes.length}
                       </span>
                       <span>현재 점검: 카드에서 배운 개념 객관식</span>
                     </div>
@@ -1097,7 +1172,7 @@ export default function Chapter() {
                         <button
                           className="ghost-button"
                           onClick={() => {
-                            setQuizIndex((prev) => (prev + 1) % selectedQuizzes.length);
+                            setQuizIndex((prev) => (prev + 1) % randomizedQuizzes.length);
                             setQuizSelection(null);
                             setQuizChecked(false);
                           }}
@@ -1125,15 +1200,15 @@ export default function Chapter() {
                     <div className="card-study-meta">
                       <span>
                         서술형 문항:{" "}
-                        {selectedSubjectives.findIndex((item) => item.id === subjectiveId) + 1} /{" "}
-                        {selectedSubjectives.length}
+                        {randomizedSubjectives.findIndex((item) => item.id === subjectiveId) + 1} /{" "}
+                        {randomizedSubjectives.length}
                       </span>
                       <span>
                         채점: {gradingMode === "gemini" ? "Gemini AI" : "로컬 기준"}
                       </span>
                     </div>
                     <div className="subjective-selector">
-                      {selectedSubjectives.map((quiz) => (
+                      {randomizedSubjectives.map((quiz) => (
                         <button
                           className={subjectiveId === quiz.id ? "mini-button active" : "mini-button"}
                           key={quiz.id}
@@ -1146,7 +1221,7 @@ export default function Chapter() {
                           }}
                           type="button"
                         >
-                          문항 {selectedSubjectives.findIndex((item) => item.id === quiz.id) + 1}
+                          문항 {randomizedSubjectives.findIndex((item) => item.id === quiz.id) + 1}
                         </button>
                       ))}
                     </div>
