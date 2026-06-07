@@ -1,101 +1,687 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { useLearning } from "../context/useLearning";
 import { chapters, quizzes } from "../data/chapters";
-import { checkLearningObjective, gradeSubjectiveAnswer } from "../utils/localGrader";
+import {
+  checkLearningObjective,
+  createLearningObjectiveHint,
+  gradeSubjectiveAnswer,
+} from "../utils/localGrader";
 import {
   checkLearningObjectiveWithGemini,
+  createLearningObjectiveHintWithGemini,
   gradeSubjectiveAnswerWithGemini,
   hasGeminiKey,
 } from "../utils/gemini";
-import { playNarration, stopNarration } from "../utils/speech";
+import { triggerMascotSpeech } from "../utils/mascotAudio";
+import {
+  playCorrectSound,
+  playGemSound,
+  playIncorrectSound,
+  playLevelUpSound,
+  playXpSound,
+} from "../utils/soundEffects";
 
-const tabs = ["overview", "blanks", "cards", "quiz", "subjective"];
+const topTabs = ["overview", "blanks", "cards", "quiz"];
+const cardModes = ["flip", "memory", "objective", "subjective"];
+const quizModes = ["objective", "subjective"];
+
+const shuffle = (items) => {
+  const next = [...items];
+
+  for (let index = next.length - 1; index > 0; index -= 1) {
+    const randomIndex = Math.floor(Math.random() * (index + 1));
+    [next[index], next[randomIndex]] = [next[randomIndex], next[index]];
+  }
+
+  return next;
+};
+
+const hashString = (value) =>
+  value.split("").reduce((total, character, index) => total + character.charCodeAt(0) * (index + 1), 0);
+
+const getObjectiveStatus = (feedback) => {
+  if (!feedback) {
+    return { label: "미달성 목표", tone: "pending" };
+  }
+
+  if (feedback.score >= 80) {
+    return { label: "달성한 목표", tone: "complete" };
+  }
+
+  return { label: "보완이 필요한 목표", tone: "in-progress" };
+};
+
+const buildMemoryDeck = (flashcards) => {
+  const sourceCards = flashcards.slice(0, Math.min(4, flashcards.length));
+
+  return shuffle(
+    sourceCards.flatMap((card, index) => [
+      {
+        id: `term-${card.id}`,
+        pairId: `pair-${index}`,
+        type: "term",
+        content: card.term,
+      },
+      {
+        id: `definition-${card.id}`,
+        pairId: `pair-${index}`,
+        type: "definition",
+        content: card.definition,
+      },
+    ])
+  );
+};
+
+const buildCardObjectiveOptions = (currentCard, flashcards) => {
+  if (!currentCard) {
+    return [];
+  }
+
+  const distractors = flashcards
+    .filter((card) => card.term !== currentCard.term)
+    .map((card) => card.term)
+    .slice(0, 3);
+
+  return [currentCard.term, ...distractors]
+    .map((option, index) => ({
+      option,
+      sortKey: (hashString(`${currentCard.id}:${option}`) + index * 17) % 997,
+    }))
+    .sort((left, right) => left.sortKey - right.sortKey)
+    .map((item) => item.option);
+};
 
 export default function Chapter() {
   const { chapterId } = useParams();
+  const { chapterState, rewards, updateChapterState, addXp, addGems, markReward } =
+    useLearning();
   const chapter = chapters.find((item) => item.id === chapterId) ?? chapters[0];
   const allSubsections = chapter.sections.flatMap((section) => section.subsections);
+  const savedChapterState = chapterState[chapter.id] ?? {};
+  const initialSubsection = allSubsections[0];
+  const initialSection = chapter.sections.find((section) =>
+    section.subsections.some((subsection) => subsection.id === initialSubsection.id)
+  ) ?? chapter.sections[0];
+  const initialFlashcards = initialSubsection.flashcards.map((card, index) => ({
+    ...card,
+    id: `${initialSubsection.id}-flash-${index}`,
+    subsectionTitle: initialSection.title,
+  }));
 
-  const [selectedSubsectionId, setSelectedSubsectionId] = useState(allSubsections[0].id);
-  const [activeTab, setActiveTab] = useState("overview");
-  const [blankAnswers, setBlankAnswers] = useState({});
-  const [revealedCards, setRevealedCards] = useState({});
-  const [objectiveAnswer, setObjectiveAnswer] = useState("");
-  const [objectiveFeedback, setObjectiveFeedback] = useState(null);
-  const [objectiveLoading, setObjectiveLoading] = useState(false);
-  const [quizIndex, setQuizIndex] = useState(0);
+  const [selectedSubsectionId, setSelectedSubsectionId] = useState(
+    allSubsections.some((item) => item.id === savedChapterState.selectedSubsectionId)
+      ? savedChapterState.selectedSubsectionId
+      : allSubsections[0].id
+  );
+  const [activeTab, setActiveTab] = useState(savedChapterState.activeTab ?? "overview");
+  const [cardMode, setCardMode] = useState(savedChapterState.cardMode ?? "flip");
+  const [quizMode, setQuizMode] = useState(savedChapterState.quizMode ?? "objective");
+  const [blankAnswers, setBlankAnswers] = useState(savedChapterState.blankAnswers ?? {});
+  const [blankChecks, setBlankChecks] = useState(savedChapterState.blankChecks ?? {});
+  const [objectiveModalId, setObjectiveModalId] = useState(null);
+  const [objectiveDrafts, setObjectiveDrafts] = useState(savedChapterState.objectiveDrafts ?? {});
+  const [objectiveFeedbackMap, setObjectiveFeedbackMap] = useState(
+    savedChapterState.objectiveFeedbackMap ?? {}
+  );
+  const [objectiveHintMap, setObjectiveHintMap] = useState(
+    savedChapterState.objectiveHintMap ?? {}
+  );
+  const [objectiveLoadingId, setObjectiveLoadingId] = useState(null);
+  const [objectiveHintLoadingId, setObjectiveHintLoadingId] = useState(null);
+  const [cardIndex, setCardIndex] = useState(savedChapterState.cardIndex ?? 0);
+  const [cardObjectiveIndex, setCardObjectiveIndex] = useState(
+    savedChapterState.cardObjectiveIndex ?? 0
+  );
+  const [cardSubjectiveIndex, setCardSubjectiveIndex] = useState(
+    savedChapterState.cardSubjectiveIndex ?? 0
+  );
+  const [cardFlipped, setCardFlipped] = useState(false);
+  const [memoryDeck, setMemoryDeck] = useState(() => buildMemoryDeck(initialFlashcards));
+  const [openedMemoryIds, setOpenedMemoryIds] = useState([]);
+  const [matchedMemoryIds, setMatchedMemoryIds] = useState([]);
+  const [memoryAttempts, setMemoryAttempts] = useState(savedChapterState.memoryAttempts ?? 0);
+  const [quizIndex, setQuizIndex] = useState(savedChapterState.quizIndex ?? 0);
   const [quizSelection, setQuizSelection] = useState(null);
   const [quizChecked, setQuizChecked] = useState(false);
-  const [subjectiveId, setSubjectiveId] = useState(chapter.subjectiveQuizzes[0].id);
-  const [subjectiveAnswer, setSubjectiveAnswer] = useState("");
-  const [subjectiveFeedback, setSubjectiveFeedback] = useState(null);
+  const [cardObjectiveSelectionMap, setCardObjectiveSelectionMap] = useState(
+    savedChapterState.cardObjectiveSelectionMap ?? {}
+  );
+  const [cardObjectiveCheckedMap, setCardObjectiveCheckedMap] = useState(
+    savedChapterState.cardObjectiveCheckedMap ?? {}
+  );
+  const [cardSubjectiveAnswers, setCardSubjectiveAnswers] = useState(
+    savedChapterState.cardSubjectiveAnswers ?? {}
+  );
+  const [cardSubjectiveFeedbackMap, setCardSubjectiveFeedbackMap] = useState(
+    savedChapterState.cardSubjectiveFeedbackMap ?? {}
+  );
+  const [cardSubjectiveLoadingId, setCardSubjectiveLoadingId] = useState(null);
+  const [subjectiveId, setSubjectiveId] = useState(
+    savedChapterState.subjectiveId ??
+      chapter.subjectiveQuizzes.find((item) => item.subsectionId === allSubsections[0].id)?.id ??
+      chapter.subjectiveQuizzes[0].id
+  );
+  const [subjectiveAnswers, setSubjectiveAnswers] = useState(
+    savedChapterState.subjectiveAnswers ?? {}
+  );
+  const [subjectiveFeedbackMap, setSubjectiveFeedbackMap] = useState(
+    savedChapterState.subjectiveFeedbackMap ?? {}
+  );
   const [subjectiveLoading, setSubjectiveLoading] = useState(false);
   const [gradingMode, setGradingMode] = useState(hasGeminiKey() ? "gemini" : "local");
+  const [mascotFeedback, setMascotFeedback] = useState(null);
 
   const selectedSubsection =
     allSubsections.find((item) => item.id === selectedSubsectionId) ?? allSubsections[0];
-
-  const chapterQuizzes = quizzes.filter((quiz) => quiz.chapterId === chapter.id);
-  const currentQuiz = chapterQuizzes[quizIndex];
+  const selectedSection =
+    chapter.sections.find((section) =>
+      section.subsections.some((subsection) => subsection.id === selectedSubsection.id)
+    ) ?? chapter.sections[0];
+  const selectedFlashcards = selectedSubsection.flashcards.map((card, index) => ({
+    ...card,
+    id: `${selectedSubsection.id}-flash-${index}`,
+    subsectionTitle: selectedSection.title,
+  }));
+  const selectedQuizzes = quizzes.filter((quiz) => quiz.subsectionId === selectedSubsection.id);
+  const selectedSubjectives = chapter.subjectiveQuizzes.filter(
+    (item) => item.subsectionId === selectedSubsection.id
+  );
+  const activeObjectiveSubsection =
+    allSubsections.find((item) => item.id === objectiveModalId) ?? null;
+  const currentQuiz = selectedQuizzes[quizIndex] ?? selectedQuizzes[0];
   const currentSubjective =
-    chapter.subjectiveQuizzes.find((item) => item.id === subjectiveId) ??
-    chapter.subjectiveQuizzes[0];
+    selectedSubjectives.find((item) => item.id === subjectiveId) ?? selectedSubjectives[0];
+  const currentStudyCard = selectedFlashcards[cardIndex] ?? selectedFlashcards[0];
+  const currentCardObjectiveCard =
+    selectedFlashcards[cardObjectiveIndex] ?? selectedFlashcards[0];
+  const currentCardSubjectiveCard =
+    selectedFlashcards[cardSubjectiveIndex] ?? selectedFlashcards[0];
+  const currentCardObjectiveOptions = buildCardObjectiveOptions(
+    currentCardObjectiveCard,
+    selectedFlashcards
+  );
+  const currentCardObjectiveSelection = currentCardObjectiveCard
+    ? cardObjectiveSelectionMap[currentCardObjectiveCard.id] ?? null
+    : null;
+  const currentCardObjectiveChecked = currentCardObjectiveCard
+    ? cardObjectiveCheckedMap[currentCardObjectiveCard.id] ?? false
+    : false;
+  const currentCardSubjectiveAnswer = currentCardSubjectiveCard
+    ? cardSubjectiveAnswers[currentCardSubjectiveCard.id] ?? ""
+    : "";
+  const currentCardSubjectiveFeedback = currentCardSubjectiveCard
+    ? cardSubjectiveFeedbackMap[currentCardSubjectiveCard.id] ?? null
+    : null;
+  const currentSubjectiveAnswer = subjectiveAnswers[subjectiveId] ?? "";
+  const subjectiveFeedback = subjectiveFeedbackMap[subjectiveId] ?? null;
 
-  const solvedBlankCount = selectedSubsection.fillInTheBlanks.filter((item, index) => {
+  const currentObjectiveAnswer = activeObjectiveSubsection
+    ? objectiveDrafts[activeObjectiveSubsection.id] ?? ""
+    : "";
+  const currentObjectiveFeedback = activeObjectiveSubsection
+    ? objectiveFeedbackMap[activeObjectiveSubsection.id] ?? null
+    : null;
+  const currentObjectiveHint = activeObjectiveSubsection
+    ? objectiveHintMap[activeObjectiveSubsection.id] ?? null
+    : null;
+  const currentObjectiveStatus = getObjectiveStatus(currentObjectiveFeedback);
+
+  useEffect(() => {
+    if (!mascotFeedback) {
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => {
+      setMascotFeedback(null);
+    }, 4200);
+
+    return () => window.clearTimeout(timer);
+  }, [mascotFeedback]);
+
+  const deliverMascotFeedback = (type, role, rewardText = "") => {
+    const line = triggerMascotSpeech({ type, role });
+    setMascotFeedback({
+      ...line,
+      type,
+      rewardText,
+    });
+    return line;
+  };
+
+  const rewardProgress = ({ xp = 0, gems = 0 }) => {
+    const rewardParts = [];
+
+    if (xp > 0) {
+      const { leveledUp } = addXp(xp);
+      playXpSound();
+      rewardParts.push(`+${xp} XP`);
+      if (leveledUp) {
+        playLevelUpSound();
+        rewardParts.push("레벨 업!");
+      }
+    }
+
+    if (gems > 0) {
+      addGems(gems);
+      playGemSound();
+      rewardParts.push(`💎 +${gems}`);
+    }
+
+    return rewardParts.join(" · ");
+  };
+
+  useEffect(() => {
+    updateChapterState(chapter.id, (previousState) => ({
+      ...previousState,
+      selectedSubsectionId,
+      activeTab,
+      cardMode,
+      quizMode,
+      blankAnswers,
+      blankChecks,
+      objectiveDrafts,
+      objectiveFeedbackMap,
+      objectiveHintMap,
+      cardIndex,
+      cardObjectiveIndex,
+      cardSubjectiveIndex,
+      memoryAttempts,
+      quizIndex,
+      cardObjectiveSelectionMap,
+      cardObjectiveCheckedMap,
+      cardSubjectiveAnswers,
+      cardSubjectiveFeedbackMap,
+      subjectiveId,
+      subjectiveAnswers,
+      subjectiveFeedbackMap,
+    }));
+  }, [
+    activeTab,
+    blankAnswers,
+    blankChecks,
+    cardIndex,
+    cardObjectiveIndex,
+    cardObjectiveCheckedMap,
+    cardObjectiveSelectionMap,
+    cardSubjectiveIndex,
+    cardSubjectiveAnswers,
+    cardSubjectiveFeedbackMap,
+    cardMode,
+    chapter.id,
+    memoryAttempts,
+    objectiveDrafts,
+    objectiveFeedbackMap,
+    objectiveHintMap,
+    quizIndex,
+    quizMode,
+    selectedSubsectionId,
+    subjectiveAnswers,
+    subjectiveFeedbackMap,
+    subjectiveId,
+    updateChapterState,
+  ]);
+
+  const isBlankQuestionCorrect = (question, index) => {
     const key = `${selectedSubsection.id}-${index}`;
-    return (
-      (blankAnswers[key] ?? "").trim().toLowerCase() === item.answer.trim().toLowerCase()
+    const values = blankAnswers[key] ?? [];
+
+    return question.answers.every(
+      (answer, answerIndex) =>
+        (values[answerIndex] ?? "").trim().toLowerCase() === answer.trim().toLowerCase()
     );
-  }).length;
+  };
+
+  const openObjectivePad = (subsection) => {
+    setSelectedSubsectionId(subsection.id);
+    setObjectiveModalId(subsection.id);
+  };
+
+  const resetCardProgress = (nextMode) => {
+    setActiveTab("cards");
+    setCardMode(nextMode);
+
+    if (nextMode === "flip") {
+      setCardIndex(0);
+      setCardFlipped(false);
+    }
+
+    if (nextMode === "memory") {
+      setMemoryDeck(buildMemoryDeck(selectedFlashcards));
+      setOpenedMemoryIds([]);
+      setMatchedMemoryIds([]);
+      setMemoryAttempts(0);
+    }
+
+    if (nextMode === "objective") {
+      setCardObjectiveIndex(0);
+    }
+
+    if (nextMode === "subjective") {
+      setCardSubjectiveIndex(0);
+    }
+  };
+
+  const resetQuizProgress = (nextMode) => {
+    setActiveTab("quiz");
+    setQuizMode(nextMode);
+
+    if (nextMode === "objective") {
+      setQuizIndex(0);
+      setQuizSelection(null);
+      setQuizChecked(false);
+    }
+
+    if (nextMode === "subjective") {
+      setSubjectiveId(selectedSubjectives[0]?.id ?? chapter.subjectiveQuizzes[0]?.id ?? "");
+    }
+  };
+
+  const handleTopTabClick = (tab) => {
+    if (tab === "cards") {
+      resetCardProgress("flip");
+      return;
+    }
+
+    if (tab === "quiz") {
+      resetQuizProgress("objective");
+      return;
+    }
+
+    setActiveTab(tab);
+  };
 
   const handleObjectiveCheck = async () => {
-    setObjectiveLoading(true);
+    if (!activeObjectiveSubsection) {
+      return;
+    }
+
+    const answer = objectiveDrafts[activeObjectiveSubsection.id] ?? "";
+    setObjectiveLoadingId(activeObjectiveSubsection.id);
+
     try {
+      let result;
       if (hasGeminiKey()) {
-        const result = await checkLearningObjectiveWithGemini(
-          selectedSubsection,
-          objectiveAnswer
-        );
-        setObjectiveFeedback(result);
+        result = await checkLearningObjectiveWithGemini(activeObjectiveSubsection, answer);
+        setObjectiveFeedbackMap((prev) => ({
+          ...prev,
+          [activeObjectiveSubsection.id]: result,
+        }));
         setGradingMode("gemini");
       } else {
-        setObjectiveFeedback(checkLearningObjective(selectedSubsection, objectiveAnswer));
+        result = checkLearningObjective(activeObjectiveSubsection, answer);
+        setObjectiveFeedbackMap((prev) => ({
+          ...prev,
+          [activeObjectiveSubsection.id]: result,
+        }));
         setGradingMode("local");
       }
+
+      if (result.score >= 80) {
+        playCorrectSound();
+        let rewardText = "";
+
+        if (!rewards.objectives[activeObjectiveSubsection.id]) {
+          markReward("objectives", activeObjectiveSubsection.id);
+          rewardText = rewardProgress({ xp: 50, gems: 2 });
+        }
+        deliverMascotFeedback("success", "scholar", rewardText);
+      } else {
+        playIncorrectSound();
+        deliverMascotFeedback("fail", "scholar");
+      }
     } catch (error) {
-      setObjectiveFeedback(checkLearningObjective(selectedSubsection, objectiveAnswer));
+      const result = checkLearningObjective(activeObjectiveSubsection, answer);
+      setObjectiveFeedbackMap((prev) => ({
+        ...prev,
+        [activeObjectiveSubsection.id]: result,
+      }));
       setGradingMode("local");
+      if (result.score >= 80) {
+        playCorrectSound();
+        deliverMascotFeedback("success", "scholar");
+      } else {
+        playIncorrectSound();
+        deliverMascotFeedback("fail", "scholar");
+      }
       console.error(error);
     } finally {
-      setObjectiveLoading(false);
+      setObjectiveLoadingId(null);
+    }
+  };
+
+  const handleObjectiveHint = async () => {
+    if (!activeObjectiveSubsection) {
+      return;
+    }
+
+    const answer = objectiveDrafts[activeObjectiveSubsection.id] ?? "";
+    setObjectiveHintLoadingId(activeObjectiveSubsection.id);
+
+    try {
+      if (hasGeminiKey()) {
+        const result = await createLearningObjectiveHintWithGemini(
+          activeObjectiveSubsection,
+          answer
+        );
+        setObjectiveHintMap((prev) => ({
+          ...prev,
+          [activeObjectiveSubsection.id]: result,
+        }));
+        setGradingMode("gemini");
+      } else {
+        const result = createLearningObjectiveHint(activeObjectiveSubsection, answer);
+        setObjectiveHintMap((prev) => ({
+          ...prev,
+          [activeObjectiveSubsection.id]: result,
+        }));
+        setGradingMode("local");
+      }
+      deliverMascotFeedback("hint", "scholar");
+    } catch (error) {
+      const result = createLearningObjectiveHint(activeObjectiveSubsection, answer);
+      setObjectiveHintMap((prev) => ({
+        ...prev,
+        [activeObjectiveSubsection.id]: result,
+      }));
+      setGradingMode("local");
+      deliverMascotFeedback("hint", "scholar");
+      console.error(error);
+    } finally {
+      setObjectiveHintLoadingId(null);
+    }
+  };
+
+  const handleMemoryCardClick = (card) => {
+    if (openedMemoryIds.includes(card.id) || matchedMemoryIds.includes(card.id)) {
+      return;
+    }
+
+    if (openedMemoryIds.length === 2) {
+      return;
+    }
+
+    const nextOpened = [...openedMemoryIds, card.id];
+    setOpenedMemoryIds(nextOpened);
+
+    if (nextOpened.length === 2) {
+      setMemoryAttempts((prev) => prev + 1);
+      const openedCards = nextOpened.map((id) => memoryDeck.find((item) => item.id === id));
+      const isMatch = openedCards[0]?.pairId === openedCards[1]?.pairId;
+
+      if (isMatch) {
+        setMatchedMemoryIds((prev) => [...prev, ...nextOpened]);
+        setTimeout(() => {
+          setOpenedMemoryIds([]);
+        }, 260);
+        return;
+      }
+
+      setTimeout(() => {
+        setOpenedMemoryIds([]);
+      }, 700);
     }
   };
 
   const handleSubjectiveCheck = async () => {
     setSubjectiveLoading(true);
     try {
+      let result;
       if (hasGeminiKey()) {
-        const result = await gradeSubjectiveAnswerWithGemini(
+        result = await gradeSubjectiveAnswerWithGemini(
           currentSubjective.question,
           currentSubjective.expectedAnswer,
-          subjectiveAnswer
+          currentSubjectiveAnswer
         );
-        setSubjectiveFeedback(result);
+        setSubjectiveFeedbackMap((prev) => ({
+          ...prev,
+          [subjectiveId]: result,
+        }));
         setGradingMode("gemini");
       } else {
-        setSubjectiveFeedback(
-          gradeSubjectiveAnswer(currentSubjective.expectedAnswer, subjectiveAnswer)
-        );
+        result = gradeSubjectiveAnswer(currentSubjective.expectedAnswer, currentSubjectiveAnswer);
+        setSubjectiveFeedbackMap((prev) => ({
+          ...prev,
+          [subjectiveId]: result,
+        }));
         setGradingMode("local");
       }
+
+      if (["A", "B"].includes(result.grade)) {
+        playCorrectSound();
+        let rewardText = "";
+
+        if (!rewards.subjectives[subjectiveId]) {
+          markReward("subjectives", subjectiveId);
+          rewardText = rewardProgress({ xp: 30, gems: 1 });
+        }
+        deliverMascotFeedback("success", "king", rewardText);
+      } else {
+        playIncorrectSound();
+        deliverMascotFeedback("fail", "king");
+      }
     } catch (error) {
-      setSubjectiveFeedback(
-        gradeSubjectiveAnswer(currentSubjective.expectedAnswer, subjectiveAnswer)
-      );
+      const result = gradeSubjectiveAnswer(currentSubjective.expectedAnswer, currentSubjectiveAnswer);
+      setSubjectiveFeedbackMap((prev) => ({
+        ...prev,
+        [subjectiveId]: result,
+      }));
       setGradingMode("local");
+      if (["A", "B"].includes(result.grade)) {
+        playCorrectSound();
+        deliverMascotFeedback("success", "king");
+      } else {
+        playIncorrectSound();
+        deliverMascotFeedback("fail", "king");
+      }
       console.error(error);
     } finally {
       setSubjectiveLoading(false);
+    }
+  };
+
+  const handleCardObjectiveSubmit = () => {
+    if (!currentCardObjectiveCard) {
+      return;
+    }
+
+    setCardObjectiveCheckedMap((prev) => ({
+      ...prev,
+      [currentCardObjectiveCard.id]: true,
+    }));
+
+    if (
+      currentCardObjectiveOptions[currentCardObjectiveSelection] ===
+      currentCardObjectiveCard.term
+    ) {
+      playCorrectSound();
+      deliverMascotFeedback("success", "general", "+개념 확인 완료");
+      return;
+    }
+
+    playIncorrectSound();
+    deliverMascotFeedback("fail", "general");
+  };
+
+  const handleCardSubjectiveCheck = async () => {
+    if (!currentCardSubjectiveCard) {
+      return;
+    }
+
+    setCardSubjectiveLoadingId(currentCardSubjectiveCard.id);
+
+    try {
+      let result;
+
+      if (hasGeminiKey()) {
+        result = await gradeSubjectiveAnswerWithGemini(
+          `${currentCardSubjectiveCard.term}의 뜻을 자신의 말로 설명하시오.`,
+          currentCardSubjectiveCard.definition,
+          currentCardSubjectiveAnswer
+        );
+        setGradingMode("gemini");
+      } else {
+        result = gradeSubjectiveAnswer(
+          currentCardSubjectiveCard.definition,
+          currentCardSubjectiveAnswer
+        );
+        setGradingMode("local");
+      }
+
+      setCardSubjectiveFeedbackMap((prev) => ({
+        ...prev,
+        [currentCardSubjectiveCard.id]: result,
+      }));
+
+      if (["A", "B"].includes(result.grade)) {
+        playCorrectSound();
+        deliverMascotFeedback("success", "scholar", "서술형 개념 설명 성공");
+      } else {
+        playIncorrectSound();
+        deliverMascotFeedback("fail", "scholar");
+      }
+    } catch (error) {
+      const result = gradeSubjectiveAnswer(
+        currentCardSubjectiveCard.definition,
+        currentCardSubjectiveAnswer
+      );
+      setCardSubjectiveFeedbackMap((prev) => ({
+        ...prev,
+        [currentCardSubjectiveCard.id]: result,
+      }));
+      setGradingMode("local");
+      if (["A", "B"].includes(result.grade)) {
+        playCorrectSound();
+        deliverMascotFeedback("success", "scholar", "서술형 개념 설명 성공");
+      } else {
+        playIncorrectSound();
+        deliverMascotFeedback("fail", "scholar");
+      }
+      console.error(error);
+    } finally {
+      setCardSubjectiveLoadingId(null);
+    }
+  };
+
+  const handleObjectiveQuizSubmit = () => {
+    setQuizChecked(true);
+
+    if (quizSelection === null || !currentQuiz) {
+      return;
+    }
+
+    if (quizSelection === currentQuiz.answer) {
+      playCorrectSound();
+      let rewardText = "";
+
+      if (!rewards.quizzes[currentQuiz.id]) {
+        markReward("quizzes", currentQuiz.id);
+        rewardText = rewardProgress({ xp: 15 });
+      }
+      deliverMascotFeedback("success", "general", rewardText);
+    } else {
+      playIncorrectSound();
+      deliverMascotFeedback("fail", "general");
     }
   };
 
@@ -106,13 +692,9 @@ export default function Chapter() {
           <Link className="back-link" to="/">
             홈으로
           </Link>
-          <p className="eyebrow">Chapter Study</p>
+          <p className="eyebrow">Ethics Chapter</p>
           <h1>{chapter.subtitle}</h1>
           <p className="chapter-summary">{chapter.summary}</p>
-        </div>
-        <div className="chapter-badge">
-          <span>현재 범위</span>
-          <strong>{chapter.pageRange}</strong>
         </div>
       </div>
 
@@ -134,128 +716,110 @@ export default function Chapter() {
                     onClick={() => {
                       setSelectedSubsectionId(subsection.id);
                       setActiveTab("overview");
-                      setObjectiveAnswer("");
-                      setObjectiveFeedback(null);
+                      setCardIndex(0);
+                      setCardObjectiveIndex(0);
+                      setCardSubjectiveIndex(0);
+                      setCardFlipped(false);
+                      setMemoryDeck(
+                        buildMemoryDeck(
+                          subsection.flashcards.map((card, index) => ({
+                            ...card,
+                            id: `${subsection.id}-flash-${index}`,
+                            subsectionTitle: section.title,
+                          }))
+                        )
+                      );
+                      setOpenedMemoryIds([]);
+                      setMatchedMemoryIds([]);
+                      setMemoryAttempts(0);
+                      setQuizIndex(0);
+                      setQuizSelection(null);
+                      setQuizChecked(false);
+                      setQuizMode("objective");
+                      const subsectionSubjectives = chapter.subjectiveQuizzes.filter(
+                        (item) => item.subsectionId === subsection.id
+                      );
+                      setSubjectiveId(subsectionSubjectives[0]?.id ?? "");
+                      setSubjectiveFeedbackMap((prev) => {
+                        const next = { ...prev };
+                        subsectionSubjectives.forEach((item) => {
+                          if (!(item.id in next)) {
+                            next[item.id] = null;
+                          }
+                        });
+                        return next;
+                      });
                     }}
                     type="button"
                   >
                     <span>{subsection.title}</span>
-                    <small>{subsection.page}쪽</small>
+                    <small>{subsection.page}</small>
                   </button>
                 ))}
               </div>
             ))}
           </div>
-
-          <div className="sidebar-card accent">
-            <p className="sidebar-title">빠른 점검</p>
-            <ul className="compact-list">
-              <li>빈칸 정답 수: {solvedBlankCount} / {selectedSubsection.fillInTheBlanks.length}</li>
-              <li>객관식 진행: {quizIndex + 1} / {chapterQuizzes.length}</li>
-              <li>서술형 문항: {chapter.subjectiveQuizzes.length}개</li>
-              <li>채점 방식: {gradingMode === "gemini" ? "Gemini AI" : "로컬 기준"}</li>
-            </ul>
-          </div>
         </aside>
 
         <main className="chapter-main">
-          <section className="focus-card">
-            <div className="focus-head">
-              <div>
-                <p className="eyebrow">Selected Topic</p>
-                <h2>{selectedSubsection.title}</h2>
-                <p>{selectedSubsection.objective}</p>
-              </div>
-              <div className="focus-actions">
-                <button
-                  className="ghost-button"
-                  onClick={() =>
-                    playNarration(
-                      `${selectedSubsection.title}. ${selectedSubsection.keyPoints.join(" ")}`
-                    )
-                  }
-                  type="button"
-                >
-                  읽어주기
-                </button>
-                <button className="ghost-button" onClick={stopNarration} type="button">
-                  음성 멈춤
-                </button>
-              </div>
-            </div>
-            <div className="keypoint-grid">
-              {selectedSubsection.keyPoints.map((point) => (
-                <article className="keypoint-card" key={point}>
-                  <span>핵심</span>
-                  <p>{point}</p>
-                </article>
-              ))}
-            </div>
-          </section>
-
           <section className="tabs-card">
             <div className="tab-row">
-              {tabs.map((tab) => (
-                <button
-                  className={activeTab === tab ? "tab-button active" : "tab-button"}
-                  key={tab}
-                  onClick={() => setActiveTab(tab)}
-                  type="button"
-                >
-                  {tab === "overview" && "개념 설명"}
-                  {tab === "blanks" && "빈칸 훈련"}
-                  {tab === "cards" && "카드 암기"}
-                  {tab === "quiz" && "객관식"}
-                  {tab === "subjective" && "서술형"}
-                </button>
-              ))}
+              {topTabs.map((tab) => {
+                const isActive =
+                  (tab === "overview" && activeTab === "overview") ||
+                  (tab === "blanks" && activeTab === "blanks") ||
+                  (tab === "cards" && activeTab === "cards") ||
+                  (tab === "quiz" && activeTab === "quiz");
+
+                return (
+                  <button
+                    className={isActive ? "tab-button active" : "tab-button"}
+                    key={tab}
+                    onClick={() => handleTopTabClick(tab)}
+                    type="button"
+                  >
+                    {tab === "overview" && "학습 목표"}
+                    {tab === "blanks" && "빈칸 훈련"}
+                    {tab === "cards" && "도덕 카드 (개념 정복)"}
+                    {tab === "quiz" && "실전 퀴즈"}
+                  </button>
+                );
+              })}
             </div>
 
             {activeTab === "overview" && (
               <div className="tab-panel">
-                <div className="panel-block">
-                  <h3>학습 목표 설명해 보기</h3>
-                  <p>
-                    아래에 직접 설명을 적고 피드백 받기를 누르면 교과서 핵심어를
-                    기준으로 부족한 점을 짚어 줍니다.
-                  </p>
-                  <textarea
-                    className="study-textarea"
-                    onChange={(event) => setObjectiveAnswer(event.target.value)}
-                    placeholder="예: 자아는 나를 알고자 하는 과정에서 드러나는 모습이고..."
-                    value={objectiveAnswer}
-                  />
-                  <div className="inline-actions">
-                    <button
-                      className="primary-button"
-                      disabled={objectiveLoading || !objectiveAnswer.trim()}
-                      onClick={handleObjectiveCheck}
-                      type="button"
-                    >
-                      {objectiveLoading ? "채점 중..." : "피드백 받기"}
-                    </button>
-                  </div>
-                  {objectiveFeedback && (
-                    <div className="feedback-card">
-                      <strong>이해도 {objectiveFeedback.score}점</strong>
-                      <p>{objectiveFeedback.feedback}</p>
-                      <small>
-                        잡힌 핵심어:{" "}
-                        {objectiveFeedback.matchedKeywords.length
-                          ? objectiveFeedback.matchedKeywords.join(", ")
-                          : "아직 없음"}
-                      </small>
+                {chapter.sections.map((section) => (
+                  <article className="objective-section-card" key={section.id}>
+                    <h3>{section.title}</h3>
+                    <div className="objective-list">
+                      {section.subsections.map((subsection) => {
+                        const feedback = objectiveFeedbackMap[subsection.id] ?? null;
+                        const status = getObjectiveStatus(feedback);
+
+                        return (
+                          <button
+                            className="objective-item"
+                            key={subsection.id}
+                            onClick={() => openObjectivePad(subsection)}
+                            type="button"
+                          >
+                            <span
+                              className={`objective-item-marker objective-item-marker-${status.tone}`}
+                            />
+                            <div className="objective-item-copy">
+                              <div className="objective-item-head">
+                                <strong>{subsection.title}</strong>
+                                <small>{status.label}</small>
+                              </div>
+                              <p>{subsection.objective}</p>
+                            </div>
+                          </button>
+                        );
+                      })}
                     </div>
-                  )}
-                </div>
-                <div className="panel-block">
-                  <h3>생각 확장 질문</h3>
-                  <ul className="prompt-list">
-                    {selectedSubsection.reflectionPrompts.map((prompt) => (
-                      <li key={prompt}>{prompt}</li>
-                    ))}
-                  </ul>
-                </div>
+                  </article>
+                ))}
               </div>
             )}
 
@@ -263,27 +827,78 @@ export default function Chapter() {
               <div className="tab-panel">
                 {selectedSubsection.fillInTheBlanks.map((item, index) => {
                   const key = `${selectedSubsection.id}-${index}`;
-                  const userValue = blankAnswers[key] ?? "";
-                  const isCorrect =
-                    userValue.trim().toLowerCase() === item.answer.trim().toLowerCase();
+                  const userValues = blankAnswers[key] ?? [];
+                  const checked = blankChecks[key] ?? false;
+                  const isCorrect = isBlankQuestionCorrect(item, index);
+                  const segments = item.text.split(/\[(.*?)\]/g);
 
                   return (
                     <article className="blank-card" key={key}>
-                      <p>{item.sentence.replace(/\[(.*?)\]/g, "____")}</p>
-                      <div className="blank-row">
-                        <input
-                          className="study-input"
-                          onChange={(event) =>
-                            setBlankAnswers((prev) => ({
+                      <div className="blank-sentence">
+                        <strong>Q{index + 1}.</strong>
+                        <p>
+                          {segments.map((segment, segmentIndex) =>
+                            segmentIndex % 2 === 0 ? (
+                              <span key={`${key}-text-${segmentIndex}`}>{segment}</span>
+                            ) : (
+                              <input
+                                className="inline-blank-input"
+                                key={`${key}-answer-${segmentIndex}`}
+                                onChange={(event) => {
+                                  const answerIndex = Math.floor(segmentIndex / 2);
+                                  setBlankAnswers((prev) => {
+                                    const nextValues = [...(prev[key] ?? [])];
+                                    nextValues[answerIndex] = event.target.value;
+                                    return {
+                                      ...prev,
+                                      [key]: nextValues,
+                                    };
+                                  });
+                                  setBlankChecks((prev) => ({
+                                    ...prev,
+                                    [key]: false,
+                                  }));
+                                }}
+                                placeholder="정답"
+                                value={userValues[Math.floor(segmentIndex / 2)] ?? ""}
+                              />
+                            )
+                          )}
+                        </p>
+                      </div>
+                      <div className="blank-actions">
+                        <button
+                          className="ghost-button"
+                          onClick={() => {
+                            setBlankChecks((prev) => ({
                               ...prev,
-                              [key]: event.target.value,
-                            }))
+                              [key]: true,
+                            }));
+                            setBlankAnswers((prev) => {
+                              const nextValues = [...(prev[key] ?? [])];
+                              const correctedValues = item.answers.map((answer, answerIndex) => {
+                                const currentValue = nextValues[answerIndex] ?? "";
+                                return currentValue.trim().toLowerCase() === answer.trim().toLowerCase()
+                                  ? currentValue
+                                  : answer;
+                              });
+
+                              return {
+                                ...prev,
+                                [key]: correctedValues,
+                              };
+                            });
+                          }}
+                          type="button"
+                        >
+                          정답 확인
+                        </button>
+                        <span
+                          className={
+                            checked && isCorrect ? "answer-chip correct" : "answer-chip"
                           }
-                          placeholder="정답 입력"
-                          value={userValue}
-                        />
-                        <span className={isCorrect ? "answer-chip correct" : "answer-chip"}>
-                          {isCorrect ? "정답" : "확인 중"}
+                        >
+                          {checked ? (isCorrect ? "정답" : "다시 확인") : "작성 중"}
                         </span>
                       </div>
                     </article>
@@ -293,144 +908,565 @@ export default function Chapter() {
             )}
 
             {activeTab === "cards" && (
-              <div className="flashcard-grid">
-                {selectedSubsection.flashcards.map((card, index) => {
-                  const key = `${selectedSubsection.id}-card-${index}`;
-                  const revealed = revealedCards[key] ?? false;
-                  return (
+              <div className="tab-panel">
+                <div className="card-mode-row">
+                  {cardModes.map((mode) => (
                     <button
-                      className={revealed ? "flashcard revealed" : "flashcard"}
-                      key={key}
-                      onClick={() =>
-                        setRevealedCards((prev) => ({ ...prev, [key]: !revealed }))
-                      }
+                      className={cardMode === mode ? "tab-button active" : "tab-button"}
+                      key={mode}
+                      onClick={() => resetCardProgress(mode)}
                       type="button"
                     >
-                      <span>{revealed ? "설명" : "용어"}</span>
-                      <strong>{revealed ? card.definition : card.term}</strong>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-
-            {activeTab === "quiz" && currentQuiz && (
-              <div className="tab-panel">
-                <div className="quiz-head">
-                  <h3>
-                    객관식 {quizIndex + 1} / {chapterQuizzes.length}
-                  </h3>
-                  <p>{currentQuiz.question}</p>
-                </div>
-                <div className="option-list">
-                  {currentQuiz.options.map((option, index) => {
-                    const selected = quizSelection === index;
-                    const correct = quizChecked && currentQuiz.answer === index;
-                    const wrong = quizChecked && selected && currentQuiz.answer !== index;
-                    const className = correct
-                      ? "option-button correct"
-                      : wrong
-                        ? "option-button wrong"
-                        : selected
-                          ? "option-button selected"
-                          : "option-button";
-
-                    return (
-                      <button
-                        className={className}
-                        key={option}
-                        onClick={() => setQuizSelection(index)}
-                        type="button"
-                      >
-                        {option}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="inline-actions">
-                  <button
-                    className="primary-button"
-                    disabled={quizSelection === null}
-                    onClick={() => setQuizChecked(true)}
-                    type="button"
-                  >
-                    정답 확인
-                  </button>
-                  <button
-                    className="ghost-button"
-                    onClick={() => {
-                      setQuizIndex((prev) => (prev + 1) % chapterQuizzes.length);
-                      setQuizSelection(null);
-                      setQuizChecked(false);
-                    }}
-                    type="button"
-                  >
-                    다음 문제
-                  </button>
-                </div>
-                {quizChecked && (
-                  <div className="feedback-card">
-                    <strong>
-                      {quizSelection === currentQuiz.answer ? "정답입니다." : "다시 확인해 보세요."}
-                    </strong>
-                    <p>{currentQuiz.explanation}</p>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {activeTab === "subjective" && (
-              <div className="tab-panel">
-                <div className="subjective-selector">
-                  {chapter.subjectiveQuizzes.map((quiz) => (
-                    <button
-                      className={subjectiveId === quiz.id ? "mini-button active" : "mini-button"}
-                      key={quiz.id}
-                      onClick={() => {
-                        setSubjectiveId(quiz.id);
-                        setSubjectiveAnswer("");
-                        setSubjectiveFeedback(null);
-                      }}
-                      type="button"
-                    >
-                      {quiz.id.toUpperCase()}
+                      {mode === "flip" && "카드 뒤집기"}
+                      {mode === "memory" && "메모리 매칭"}
+                      {mode === "objective" && "선택형 퀴즈"}
+                      {mode === "subjective" && "서술형 퀴즈"}
                     </button>
                   ))}
                 </div>
-                <div className="panel-block">
-                  <h3>{currentSubjective.question}</h3>
-                  <textarea
-                    className="study-textarea"
-                    onChange={(event) => setSubjectiveAnswer(event.target.value)}
-                    placeholder="핵심 개념, 이유, 예시를 넣어 3~5문장 정도로 써 보세요."
-                    value={subjectiveAnswer}
-                  />
-                  <div className="inline-actions">
+
+                {cardMode === "flip" && currentStudyCard && (
+                  <div className="card-study-panel">
+                    <div className="card-study-meta">
+                      <span>{selectedSection.title} 카드 수: {selectedFlashcards.length}장</span>
+                      <span>
+                        진행률: {cardIndex + 1} / {selectedFlashcards.length}
+                      </span>
+                    </div>
                     <button
-                      className="primary-button"
-                      disabled={subjectiveLoading || !subjectiveAnswer.trim()}
-                      onClick={handleSubjectiveCheck}
+                      className={cardFlipped ? "study-flashcard revealed" : "study-flashcard"}
+                      onClick={() => setCardFlipped((prev) => !prev)}
                       type="button"
                     >
-                      {subjectiveLoading ? "채점 중..." : "서술형 채점"}
+                      <span>{currentStudyCard.sectionTitle}</span>
+                      <strong>
+                        {cardFlipped ? currentStudyCard.definition : currentStudyCard.term}
+                      </strong>
+                      <small>
+                        {cardFlipped ? "다시 클릭하면 용어로 돌아갑니다." : "클릭하여 뜻 확인하기"}
+                      </small>
                     </button>
-                  </div>
-                  {subjectiveFeedback && (
-                    <div className="feedback-card">
-                      <strong>예상 등급 {subjectiveFeedback.grade}</strong>
-                      <p>{subjectiveFeedback.feedback}</p>
-                      <details>
-                        <summary>모범 답안 보기</summary>
-                        <p className="expected-answer">{currentSubjective.expectedAnswer}</p>
-                      </details>
+                    <div className="card-study-nav">
+                      <button
+                        className="ghost-button"
+                        disabled={cardIndex === 0}
+                        onClick={() => {
+                          setCardIndex((prev) => Math.max(prev - 1, 0));
+                          setCardFlipped(false);
+                        }}
+                        type="button"
+                      >
+                        이전 카드
+                      </button>
+                      <button
+                        className="ghost-button"
+                        disabled={cardIndex === selectedFlashcards.length - 1}
+                        onClick={() => {
+                          setCardIndex((prev) =>
+                            Math.min(prev + 1, selectedFlashcards.length - 1)
+                          );
+                          setCardFlipped(false);
+                        }}
+                        type="button"
+                      >
+                        다음 카드
+                      </button>
                     </div>
-                  )}
+                  </div>
+                )}
+
+                {cardMode === "memory" && (
+                  <div className="card-study-panel">
+                    <div className="card-study-meta">
+                      <span>매칭 시도 횟수: {memoryAttempts}회</span>
+                      <button
+                        className="ghost-button"
+                        onClick={() => resetCardProgress("memory")}
+                        type="button"
+                      >
+                        새 게임 시작
+                      </button>
+                    </div>
+                    <div className="memory-grid">
+                      {memoryDeck.map((card) => {
+                        const opened =
+                          openedMemoryIds.includes(card.id) ||
+                          matchedMemoryIds.includes(card.id);
+                        const matched = matchedMemoryIds.includes(card.id);
+
+                        return (
+                          <button
+                            className={
+                              matched
+                                ? "memory-card matched"
+                                : opened
+                                  ? "memory-card open"
+                                  : "memory-card"
+                            }
+                            key={card.id}
+                            onClick={() => handleMemoryCardClick(card)}
+                            type="button"
+                          >
+                            <span>{opened ? card.type === "term" ? "용어" : "설명" : "?"}</span>
+                            <strong>{opened ? card.content : "?"}</strong>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {cardMode === "objective" && currentCardObjectiveCard && (
+                  <div className="card-study-panel quiz-panel">
+                    <div className="card-study-meta">
+                      <span>
+                        카드 선택형 문항: {cardObjectiveIndex + 1} / {selectedFlashcards.length}
+                      </span>
+                      <span>현재 점검: 카드 개념 선택형 확인</span>
+                    </div>
+                    <div className="panel-block quiz-question-card">
+                      <h3>다음 설명에 해당하는 도덕 개념은 무엇인가요?</h3>
+                      <p className="card-check-prompt">"{currentCardObjectiveCard.definition}"</p>
+                      <div className="option-list">
+                        {currentCardObjectiveOptions.map((option, index) => {
+                          const selected = currentCardObjectiveSelection === index;
+                          const correct =
+                            currentCardObjectiveChecked && option === currentCardObjectiveCard.term;
+                          const wrong =
+                            currentCardObjectiveChecked &&
+                            selected &&
+                            option !== currentCardObjectiveCard.term;
+                          const className = correct
+                            ? "option-button correct"
+                            : wrong
+                              ? "option-button wrong"
+                              : selected
+                                ? "option-button selected"
+                                : "option-button";
+
+                          return (
+                            <button
+                              className={className}
+                              key={`${currentCardObjectiveCard.id}-${option}`}
+                              onClick={() =>
+                                setCardObjectiveSelectionMap((prev) => ({
+                                  ...prev,
+                                  [currentCardObjectiveCard.id]: index,
+                                }))
+                              }
+                              type="button"
+                            >
+                              {option}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="inline-actions">
+                        <button
+                          className="primary-button"
+                          disabled={currentCardObjectiveSelection === null}
+                          onClick={handleCardObjectiveSubmit}
+                          type="button"
+                        >
+                          답안 제출
+                        </button>
+                        <button
+                          className="ghost-button"
+                          onClick={() => {
+                            setCardObjectiveIndex((prev) =>
+                              Math.min(prev + 1, selectedFlashcards.length - 1)
+                            );
+                          }}
+                          type="button"
+                        >
+                          다음 카드 문제
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {cardMode === "subjective" && currentCardSubjectiveCard && (
+                  <div className="card-study-panel subjective-panel">
+                    <div className="card-study-meta">
+                      <span>
+                        카드 서술형 문항: {cardSubjectiveIndex + 1} / {selectedFlashcards.length}
+                      </span>
+                      <span>
+                        채점: {gradingMode === "gemini" ? "Gemini AI" : "로컬 기준"}
+                      </span>
+                    </div>
+                    <div className="panel-block">
+                      <h3>{currentCardSubjectiveCard.term}의 뜻을 자신의 말로 설명해 보세요.</h3>
+                      <p className="card-check-caption">
+                        카드에서 배운 뜻을 떠올려 2~4문장으로 써 보세요.
+                      </p>
+                      <textarea
+                        className="study-textarea"
+                        onChange={(event) =>
+                          setCardSubjectiveAnswers((prev) => ({
+                            ...prev,
+                            [currentCardSubjectiveCard.id]: event.target.value,
+                          }))
+                        }
+                        placeholder={`${currentCardSubjectiveCard.term}의 뜻과 특징을 정리해 보세요.`}
+                        value={currentCardSubjectiveAnswer}
+                      />
+                      <div className="inline-actions">
+                        <button
+                          className="primary-button"
+                          disabled={
+                            cardSubjectiveLoadingId === currentCardSubjectiveCard.id ||
+                            !currentCardSubjectiveAnswer.trim()
+                          }
+                          onClick={handleCardSubjectiveCheck}
+                          type="button"
+                        >
+                          {cardSubjectiveLoadingId === currentCardSubjectiveCard.id
+                            ? "채점 중..."
+                            : "채점 받기"}
+                        </button>
+                        <button
+                          className="ghost-button"
+                          onClick={() => {
+                            setCardSubjectiveIndex((prev) =>
+                              Math.min(prev + 1, selectedFlashcards.length - 1)
+                            );
+                          }}
+                          type="button"
+                        >
+                          다음 카드 문제
+                        </button>
+                      </div>
+                      {currentCardSubjectiveFeedback && (
+                        <div className="feedback-card card-inline-feedback">
+                          <strong>예상 등급 {currentCardSubjectiveFeedback.grade}</strong>
+                          <p>{currentCardSubjectiveFeedback.feedback}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+              </div>
+            )}
+
+            {activeTab === "quiz" && (
+              <div className="tab-panel">
+                <div className="card-mode-row">
+                  {quizModes.map((mode) => (
+                    <button
+                      className={quizMode === mode ? "tab-button active" : "tab-button"}
+                      key={mode}
+                      onClick={() => resetQuizProgress(mode)}
+                      type="button"
+                    >
+                      {mode === "objective" && "객관식 테스트"}
+                      {mode === "subjective" && "서술형 테스트"}
+                    </button>
+                  ))}
                 </div>
+
+                {quizMode === "objective" && currentQuiz && (
+                  <div className="card-study-panel quiz-panel">
+                    <div className="card-study-meta">
+                      <span>
+                        테스트 문항: {quizIndex + 1} / {selectedQuizzes.length}
+                      </span>
+                      <span>현재 점검: 카드에서 배운 개념 객관식</span>
+                    </div>
+                    <div className="panel-block quiz-question-card">
+                      <h3>{currentQuiz.question}</h3>
+                      <div className="option-list">
+                        {currentQuiz.options.map((option, index) => {
+                          const selected = quizSelection === index;
+                          const correct = quizChecked && currentQuiz.answer === index;
+                          const wrong = quizChecked && selected && currentQuiz.answer !== index;
+                          const className = correct
+                            ? "option-button correct"
+                            : wrong
+                              ? "option-button wrong"
+                              : selected
+                                ? "option-button selected"
+                                : "option-button";
+
+                          return (
+                            <button
+                              className={className}
+                              key={option}
+                              onClick={() => setQuizSelection(index)}
+                              type="button"
+                            >
+                              {option}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="inline-actions">
+                        <button
+                          className="primary-button"
+                          disabled={quizSelection === null}
+                          onClick={handleObjectiveQuizSubmit}
+                          type="button"
+                        >
+                          답안 제출
+                        </button>
+                        <button
+                          className="ghost-button"
+                          onClick={() => {
+                            setQuizIndex((prev) => (prev + 1) % selectedQuizzes.length);
+                            setQuizSelection(null);
+                            setQuizChecked(false);
+                          }}
+                          type="button"
+                        >
+                          다음 문제
+                        </button>
+                      </div>
+                      {quizChecked && (
+                        <div className="feedback-card">
+                          <strong>
+                            {quizSelection === currentQuiz.answer
+                              ? "정답입니다."
+                              : "다시 확인해 보세요."}
+                          </strong>
+                          <p>{currentQuiz.explanation}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {quizMode === "subjective" && (
+                  <div className="card-study-panel subjective-panel">
+                    <div className="card-study-meta">
+                      <span>
+                        서술형 문항:{" "}
+                        {selectedSubjectives.findIndex((item) => item.id === subjectiveId) + 1} /{" "}
+                        {selectedSubjectives.length}
+                      </span>
+                      <span>
+                        채점: {gradingMode === "gemini" ? "Gemini AI" : "로컬 기준"}
+                      </span>
+                    </div>
+                    <div className="subjective-selector">
+                      {selectedSubjectives.map((quiz) => (
+                        <button
+                          className={subjectiveId === quiz.id ? "mini-button active" : "mini-button"}
+                          key={quiz.id}
+                          onClick={() => {
+                            setSubjectiveId(quiz.id);
+                            setSubjectiveFeedbackMap((prev) => ({
+                              ...prev,
+                              [quiz.id]: prev[quiz.id] ?? null,
+                            }));
+                          }}
+                          type="button"
+                        >
+                          문항 {selectedSubjectives.findIndex((item) => item.id === quiz.id) + 1}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="panel-block">
+                      <h3>{currentSubjective.question}</h3>
+                      <textarea
+                        className="study-textarea"
+                        onChange={(event) =>
+                          setSubjectiveAnswers((prev) => ({
+                            ...prev,
+                            [subjectiveId]: event.target.value,
+                          }))
+                        }
+                        placeholder="핵심 개념과 이유를 포함해 3~5문장으로 답을 정리해 보세요."
+                        value={currentSubjectiveAnswer}
+                      />
+                      <div className="inline-actions">
+                        <button
+                          className="primary-button"
+                          disabled={subjectiveLoading || !currentSubjectiveAnswer.trim()}
+                          onClick={handleSubjectiveCheck}
+                          type="button"
+                        >
+                          {subjectiveLoading ? "채점 중..." : "채점 받기"}
+                        </button>
+                      </div>
+                      {subjectiveFeedback && (
+                        <div className="feedback-card">
+                          <strong>예상 등급 {subjectiveFeedback.grade}</strong>
+                          <p>{subjectiveFeedback.feedback}</p>
+                          <details>
+                            <summary>모범 답안 보기</summary>
+                            <p className="expected-answer">{currentSubjective.expectedAnswer}</p>
+                          </details>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </section>
         </main>
       </div>
+
+      {activeObjectiveSubsection && (
+        <div
+          className="objective-modal-backdrop"
+          onClick={() => setObjectiveModalId(null)}
+          role="presentation"
+        >
+          <section
+            className="objective-modal"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-labelledby="objective-modal-title"
+            aria-modal="true"
+          >
+            <div className="objective-modal-header">
+              <div>
+                <p className="eyebrow">학습목표 달성 노트패드</p>
+                <h2 id="objective-modal-title">{activeObjectiveSubsection.title}</h2>
+              </div>
+              <button
+                className="objective-modal-close"
+                onClick={() => setObjectiveModalId(null)}
+                type="button"
+              >
+                닫기
+              </button>
+            </div>
+
+            <div className="objective-modal-body">
+              <article className={`objective-status-card ${currentObjectiveStatus.tone}`}>
+                <span>{currentObjectiveStatus.label}</span>
+                <strong>{activeObjectiveSubsection.title}</strong>
+                <p>{activeObjectiveSubsection.objective}</p>
+              </article>
+
+              <div className="panel-block">
+                <h3>서술하기</h3>
+                <p>
+                  이 소단원의 핵심 내용을 포함해 자유롭게 정리해 보세요. 교과서 용어를
+                  활용하되, 자신의 말로 설명하는 것이 중요합니다.
+                </p>
+                <textarea
+                  className="study-textarea objective-notepad"
+                  onChange={(event) =>
+                    setObjectiveDrafts((prev) => ({
+                      ...prev,
+                      [activeObjectiveSubsection.id]: event.target.value,
+                    }))
+                  }
+                  placeholder="여기에 학습한 내용을 충분히 적어 보세요."
+                  value={currentObjectiveAnswer}
+                />
+              </div>
+
+              {currentObjectiveHint && (
+                <div className="feedback-card hint-card">
+                  <strong>AI 힌트</strong>
+                  <p>{currentObjectiveHint.hint}</p>
+                  {currentObjectiveHint.focusKeywords?.length > 0 && (
+                    <small>집중할 핵심어: {currentObjectiveHint.focusKeywords.join(", ")}</small>
+                  )}
+                </div>
+              )}
+
+              {currentObjectiveFeedback && (
+                <div className="feedback-card">
+                  <strong>이해도 {currentObjectiveFeedback.score}점</strong>
+                  <p>{currentObjectiveFeedback.feedback}</p>
+                  {currentObjectiveFeedback.missingKeywords?.length > 0 && (
+                    <p className="feedback-detail">
+                      더 보완할 핵심어: {currentObjectiveFeedback.missingKeywords.join(", ")}
+                    </p>
+                  )}
+                  {currentObjectiveFeedback.improvementSteps?.length > 0 && (
+                    <div className="feedback-actions-list">
+                      {currentObjectiveFeedback.improvementSteps.map((step) => (
+                        <p className="feedback-detail" key={step}>
+                          점수 올리는 방법: {step}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                  <small>
+                    잡힌 핵심어:{" "}
+                    {currentObjectiveFeedback.matchedKeywords.length
+                      ? currentObjectiveFeedback.matchedKeywords.join(", ")
+                      : "아직 없음"}
+                  </small>
+                </div>
+              )}
+            </div>
+
+            <div className="objective-modal-footer">
+              <button
+                className="ghost-button"
+                onClick={() => setObjectiveModalId(null)}
+                type="button"
+              >
+                닫기
+              </button>
+              <button
+                className="ghost-button hint-button"
+                disabled={
+                  objectiveHintLoadingId === activeObjectiveSubsection.id ||
+                  Boolean(objectiveHintMap[activeObjectiveSubsection.id])
+                }
+                onClick={handleObjectiveHint}
+                type="button"
+              >
+                {objectiveHintLoadingId === activeObjectiveSubsection.id
+                  ? "힌트 준비 중..."
+                  : objectiveHintMap[activeObjectiveSubsection.id]
+                    ? "AI 힌트 사용 완료"
+                    : "AI 힌트 (1회)"}
+              </button>
+              <button
+                className="primary-button"
+                disabled={
+                  objectiveLoadingId === activeObjectiveSubsection.id ||
+                  !currentObjectiveAnswer.trim()
+                }
+                onClick={handleObjectiveCheck}
+                type="button"
+              >
+                {objectiveLoadingId === activeObjectiveSubsection.id
+                  ? "채점 중..."
+                  : "제출하고 채점받기"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {mascotFeedback && (
+        <div className={`mascot-popup mascot-popup-${mascotFeedback.type}`}>
+          <img
+            alt="도덕 길잡이 캐릭터"
+            className="mascot-popup-image"
+            src={
+              mascotFeedback.type === "success"
+                ? "/images/ethics-guide-mascot-success.png"
+                : "/images/ethics-guide-mascot-fail.png"
+            }
+          />
+          <div className="mascot-popup-copy">
+            <span>{mascotFeedback.type === "success" ? "도덕 길잡이의 칭찬" : "도덕 길잡이의 응원"}</span>
+            <strong>{mascotFeedback.text}</strong>
+            {mascotFeedback.rewardText ? (
+              <p className="mascot-popup-reward">{mascotFeedback.rewardText}</p>
+            ) : (
+              <p className="mascot-popup-reward subtle">
+                {mascotFeedback.type === "success"
+                  ? "차분하게 핵심 개념을 잘 잡았어요."
+                  : "힌트와 피드백을 보고 다시 도전해 보세요."}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

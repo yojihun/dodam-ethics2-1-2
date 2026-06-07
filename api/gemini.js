@@ -1,4 +1,8 @@
-import { evaluateObjective, evaluateSubjective } from "../server/gemini-service.js";
+import {
+  createObjectiveHint,
+  evaluateObjective,
+  evaluateSubjective,
+} from "../server/gemini-service.js";
 
 export async function POST(request) {
   try {
@@ -7,6 +11,11 @@ export async function POST(request) {
 
     if (body.type === "objective") {
       const result = await evaluateObjective(apiKey, body.subsection, body.userAnswer);
+      return Response.json(result);
+    }
+
+    if (body.type === "objective-hint") {
+      const result = await createObjectiveHint(apiKey, body.subsection, body.userAnswer);
       return Response.json(result);
     }
 

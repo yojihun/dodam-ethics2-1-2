@@ -24,6 +24,13 @@ export const checkLearningObjectiveWithGemini = async (subsection, userAnswer) =
     userAnswer,
   });
 
+export const createLearningObjectiveHintWithGemini = async (subsection, userAnswer) =>
+  postGemini({
+    type: "objective-hint",
+    subsection,
+    userAnswer,
+  });
+
 export const gradeSubjectiveAnswerWithGemini = async (
   question,
   expectedAnswer,
