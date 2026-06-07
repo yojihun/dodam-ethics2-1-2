@@ -66,21 +66,30 @@ const playChord = ({ frequencies, startOffset = 0, duration = 0.22, peak = 0.1, 
 };
 
 export const playCorrectSound = () => {
-  playTone({ type: "triangle", frequency: 783.99, duration: 0.1, peak: 0.11 });
-  playTone({ type: "triangle", frequency: 987.77, startOffset: 0.08, duration: 0.11, peak: 0.12 });
+  playTone({ type: "triangle", frequency: 659.25, duration: 0.08, peak: 0.12 });
+  playTone({ type: "triangle", frequency: 783.99, startOffset: 0.05, duration: 0.1, peak: 0.13 });
+  playTone({ type: "triangle", frequency: 987.77, startOffset: 0.1, duration: 0.12, peak: 0.14 });
   playChord({
-    frequencies: [1174.66, 1567.98],
+    frequencies: [1174.66, 1567.98, 1975.53],
     startOffset: 0.16,
-    duration: 0.22,
-    peak: 0.12,
+    duration: 0.28,
+    peak: 0.15,
     type: "sine",
+  });
+  playTone({
+    type: "sine",
+    frequency: 2349.32,
+    startOffset: 0.24,
+    duration: 0.18,
+    peak: 0.08,
   });
 };
 
 export const playIncorrectSound = () => {
-  playTone({ type: "square", frequency: 180, duration: 0.09, peak: 0.08 });
-  playTone({ type: "square", frequency: 156, startOffset: 0.1, duration: 0.1, peak: 0.08 });
-  playTone({ type: "sawtooth", frequency: 132, startOffset: 0.22, duration: 0.16, peak: 0.07 });
+  playTone({ type: "square", frequency: 196, duration: 0.08, peak: 0.09 });
+  playTone({ type: "square", frequency: 174.61, startOffset: 0.08, duration: 0.08, peak: 0.09 });
+  playTone({ type: "square", frequency: 155.56, startOffset: 0.16, duration: 0.08, peak: 0.08 });
+  playTone({ type: "sawtooth", frequency: 130.81, startOffset: 0.25, duration: 0.2, peak: 0.07 });
 };
 
 export const playXpSound = () => {

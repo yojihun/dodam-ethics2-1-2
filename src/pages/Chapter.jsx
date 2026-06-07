@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useLearning } from "../context/useLearning";
 import { chapters, quizzes } from "../data/chapters";
 import {
@@ -94,7 +94,8 @@ const buildCardObjectiveOptions = (currentCard, flashcards) => {
 
 export default function Chapter() {
   const { chapterId } = useParams();
-  const { chapterState, rewards, updateChapterState, addXp, addGems, markReward } =
+  const navigate = useNavigate();
+  const { chapterState, rewards, level, updateChapterState, addXp, addGems, markReward } =
     useLearning();
   const chapter = chapters.find((item) => item.id === chapterId) ?? chapters[0];
   const allSubsections = chapter.sections.flatMap((section) => section.subsections);
@@ -171,6 +172,7 @@ export default function Chapter() {
   const [subjectiveLoading, setSubjectiveLoading] = useState(false);
   const [gradingMode, setGradingMode] = useState(hasGeminiKey() ? "gemini" : "local");
   const [mascotFeedback, setMascotFeedback] = useState(null);
+  const [rewardToasts, setRewardToasts] = useState([]);
 
   const selectedSubsection =
     allSubsections.find((item) => item.id === selectedSubsectionId) ?? allSubsections[0];
@@ -234,41 +236,74 @@ export default function Chapter() {
 
     const timer = window.setTimeout(() => {
       setMascotFeedback(null);
-    }, 4200);
+    }, 1900);
 
     return () => window.clearTimeout(timer);
   }, [mascotFeedback]);
 
-  const deliverMascotFeedback = (type, role, rewardText = "") => {
+  const deliverMascotFeedback = (type, role) => {
     const line = triggerMascotSpeech({ type, role });
     setMascotFeedback({
       ...line,
       type,
-      rewardText,
     });
     return line;
   };
 
-  const rewardProgress = ({ xp = 0, gems = 0 }) => {
-    const rewardParts = [];
+  const enqueueRewardToasts = (items = []) => {
+    items.forEach((item, index) => {
+      const toastId = `${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`;
+
+      window.setTimeout(() => {
+        setRewardToasts((prev) => [...prev, { id: toastId, ...item }]);
+
+        window.setTimeout(() => {
+          setRewardToasts((prev) => prev.filter((toast) => toast.id !== toastId));
+        }, 1680);
+      }, index * 140);
+    });
+  };
+
+  const rewardProgress = ({ xp = 0, gems = 0, conceptLabel = "" }) => {
+    const rewardItems = [];
+
+    if (conceptLabel) {
+      rewardItems.push({
+        tone: "concept",
+        icon: "✓",
+        label: conceptLabel,
+      });
+    }
 
     if (xp > 0) {
       const { leveledUp } = addXp(xp);
       playXpSound();
-      rewardParts.push(`+${xp} XP`);
       if (leveledUp) {
         playLevelUpSound();
-        rewardParts.push("레벨 업!");
+        rewardItems.push({
+          tone: "level",
+          icon: "⬆",
+          label: `Lv.${level + 1} 달성`,
+        });
       }
+      rewardItems.push({
+        tone: "xp",
+        icon: "⭐",
+        label: `+${xp} XP`,
+      });
     }
 
     if (gems > 0) {
       addGems(gems);
       playGemSound();
-      rewardParts.push(`💎 +${gems}`);
+      rewardItems.push({
+        tone: "gem",
+        icon: "💎",
+        label: `+${gems} 보석`,
+      });
     }
 
-    return rewardParts.join(" · ");
+    return rewardItems;
   };
 
   useEffect(() => {
@@ -419,13 +454,13 @@ export default function Chapter() {
 
       if (result.score >= 80) {
         playCorrectSound();
-        let rewardText = "";
-
         if (!rewards.objectives[activeObjectiveSubsection.id]) {
           markReward("objectives", activeObjectiveSubsection.id);
-          rewardText = rewardProgress({ xp: 50, gems: 2 });
+          enqueueRewardToasts(
+            rewardProgress({ xp: 50, gems: 2, conceptLabel: "학습목표 달성" })
+          );
         }
-        deliverMascotFeedback("success", "scholar", rewardText);
+        deliverMascotFeedback("success", "scholar");
       } else {
         playIncorrectSound();
         deliverMascotFeedback("fail", "scholar");
@@ -439,6 +474,12 @@ export default function Chapter() {
       setGradingMode("local");
       if (result.score >= 80) {
         playCorrectSound();
+        if (!rewards.objectives[activeObjectiveSubsection.id]) {
+          markReward("objectives", activeObjectiveSubsection.id);
+          enqueueRewardToasts(
+            rewardProgress({ xp: 50, gems: 2, conceptLabel: "학습목표 달성" })
+          );
+        }
         deliverMascotFeedback("success", "scholar");
       } else {
         playIncorrectSound();
@@ -549,13 +590,13 @@ export default function Chapter() {
 
       if (["A", "B"].includes(result.grade)) {
         playCorrectSound();
-        let rewardText = "";
-
         if (!rewards.subjectives[subjectiveId]) {
           markReward("subjectives", subjectiveId);
-          rewardText = rewardProgress({ xp: 30, gems: 1 });
+          enqueueRewardToasts(
+            rewardProgress({ xp: 30, gems: 1, conceptLabel: "서술형 통과" })
+          );
         }
-        deliverMascotFeedback("success", "king", rewardText);
+        deliverMascotFeedback("success", "king");
       } else {
         playIncorrectSound();
         deliverMascotFeedback("fail", "king");
@@ -569,6 +610,12 @@ export default function Chapter() {
       setGradingMode("local");
       if (["A", "B"].includes(result.grade)) {
         playCorrectSound();
+        if (!rewards.subjectives[subjectiveId]) {
+          markReward("subjectives", subjectiveId);
+          enqueueRewardToasts(
+            rewardProgress({ xp: 30, gems: 1, conceptLabel: "서술형 통과" })
+          );
+        }
         deliverMascotFeedback("success", "king");
       } else {
         playIncorrectSound();
@@ -595,7 +642,8 @@ export default function Chapter() {
       currentCardObjectiveCard.term
     ) {
       playCorrectSound();
-      deliverMascotFeedback("success", "general", "+개념 확인 완료");
+      enqueueRewardToasts(rewardProgress({ conceptLabel: "개념 확인 완료" }));
+      deliverMascotFeedback("success", "general");
       return;
     }
 
@@ -635,7 +683,8 @@ export default function Chapter() {
 
       if (["A", "B"].includes(result.grade)) {
         playCorrectSound();
-        deliverMascotFeedback("success", "scholar", "서술형 개념 설명 성공");
+        enqueueRewardToasts(rewardProgress({ conceptLabel: "개념 설명 성공" }));
+        deliverMascotFeedback("success", "scholar");
       } else {
         playIncorrectSound();
         deliverMascotFeedback("fail", "scholar");
@@ -652,7 +701,8 @@ export default function Chapter() {
       setGradingMode("local");
       if (["A", "B"].includes(result.grade)) {
         playCorrectSound();
-        deliverMascotFeedback("success", "scholar", "서술형 개념 설명 성공");
+        enqueueRewardToasts(rewardProgress({ conceptLabel: "개념 설명 성공" }));
+        deliverMascotFeedback("success", "scholar");
       } else {
         playIncorrectSound();
         deliverMascotFeedback("fail", "scholar");
@@ -672,13 +722,11 @@ export default function Chapter() {
 
     if (quizSelection === currentQuiz.answer) {
       playCorrectSound();
-      let rewardText = "";
-
       if (!rewards.quizzes[currentQuiz.id]) {
         markReward("quizzes", currentQuiz.id);
-        rewardText = rewardProgress({ xp: 15 });
+        enqueueRewardToasts(rewardProgress({ xp: 15, conceptLabel: "실전 퀴즈 정답" }));
       }
-      deliverMascotFeedback("success", "general", rewardText);
+      deliverMascotFeedback("success", "general");
     } else {
       playIncorrectSound();
       deliverMascotFeedback("fail", "general");
@@ -690,7 +738,16 @@ export default function Chapter() {
       <div className="chapter-topbar">
         <div>
           <Link className="back-link" to="/">
-            홈으로
+            <button
+              className="back-link-button"
+              onClick={(event) => {
+                event.preventDefault();
+                navigate("/");
+              }}
+              type="button"
+            >
+              홈으로
+            </button>
           </Link>
           <p className="eyebrow">Ethics Chapter</p>
           <h1>{chapter.subtitle}</h1>
@@ -1441,29 +1498,37 @@ export default function Chapter() {
         </div>
       )}
 
+      {rewardToasts.length > 0 && (
+        <div className="reward-toast-stack" aria-live="polite">
+          {rewardToasts.map((toast) => (
+            <div className={`reward-toast reward-toast--${toast.tone}`} key={toast.id}>
+              <span className="reward-toast-icon">{toast.icon}</span>
+              <strong>{toast.label}</strong>
+            </div>
+          ))}
+        </div>
+      )}
+
       {mascotFeedback && (
-        <div className={`mascot-popup mascot-popup-${mascotFeedback.type}`}>
-          <img
-            alt="도덕 길잡이 캐릭터"
-            className="mascot-popup-image"
-            src={
-              mascotFeedback.type === "success"
-                ? "/images/ethics-guide-mascot-success.png"
-                : "/images/ethics-guide-mascot-fail.png"
-            }
-          />
-          <div className="mascot-popup-copy">
-            <span>{mascotFeedback.type === "success" ? "도덕 길잡이의 칭찬" : "도덕 길잡이의 응원"}</span>
-            <strong>{mascotFeedback.text}</strong>
-            {mascotFeedback.rewardText ? (
-              <p className="mascot-popup-reward">{mascotFeedback.rewardText}</p>
-            ) : (
-              <p className="mascot-popup-reward subtle">
-                {mascotFeedback.type === "success"
-                  ? "차분하게 핵심 개념을 잘 잡았어요."
-                  : "힌트와 피드백을 보고 다시 도전해 보세요."}
-              </p>
-            )}
+        <div className={`feedback-overlay feedback-overlay--${mascotFeedback.type}`}>
+          <div className={`feedback-modal feedback-modal--${mascotFeedback.type}`}>
+            <img
+              alt="도덕 길잡이 캐릭터"
+              className="feedback-character"
+              src={
+                mascotFeedback.type === "fail"
+                  ? "/images/ethics-guide-mascot-fail.png"
+                  : "/images/ethics-guide-mascot-success.png"
+              }
+            />
+            <div className="feedback-line">{mascotFeedback.text}</div>
+            <p className="feedback-subline">
+              {mascotFeedback.type === "success"
+                ? "핵심 개념을 정확히 잡았어요"
+                : mascotFeedback.type === "hint"
+                  ? "힌트를 보고 바로 다시 도전해요"
+                  : "조금만 더 다듬으면 돼요"}
+            </p>
           </div>
         </div>
       )}

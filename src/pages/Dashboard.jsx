@@ -31,8 +31,7 @@ export default function Dashboard() {
               <ul className="chapter-card-list">
                 {chapter.sections.map((section) => (
                   <li key={section.id}>
-                    <strong>{section.title}</strong>
-                    <span>{section.subsections[0].title}</span>
+                    <span>{section.title}</span>
                   </li>
                 ))}
               </ul>
