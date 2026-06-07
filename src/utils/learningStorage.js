@@ -1,8 +1,10 @@
 const CURRENT_LEARNER_KEY = "ethics-current-learner";
 const DEFAULT_LEARNER_NAME = "도담";
+const PROFILE_SCHEMA_VERSION = "2026-06-07-content-v2";
 
 const createEmptyProfile = (learnerName) => ({
   learnerName,
+  schemaVersion: PROFILE_SCHEMA_VERSION,
   xp: 0,
   gems: 0,
   chapterState: {},
@@ -38,15 +40,18 @@ export const loadProfile = (learnerName = getCurrentLearnerName()) => {
 
   try {
     const parsed = JSON.parse(raw);
+    const schemaMatches = parsed.schemaVersion === PROFILE_SCHEMA_VERSION;
+
     return {
       ...createEmptyProfile(learnerName),
       ...parsed,
       learnerName,
-      chapterState: parsed.chapterState ?? {},
+      schemaVersion: PROFILE_SCHEMA_VERSION,
+      chapterState: schemaMatches ? parsed.chapterState ?? {} : {},
       rewards: {
-        objectives: parsed.rewards?.objectives ?? {},
-        quizzes: parsed.rewards?.quizzes ?? {},
-        subjectives: parsed.rewards?.subjectives ?? {},
+        objectives: schemaMatches ? parsed.rewards?.objectives ?? {} : {},
+        quizzes: schemaMatches ? parsed.rewards?.quizzes ?? {} : {},
+        subjectives: schemaMatches ? parsed.rewards?.subjectives ?? {} : {},
       },
     };
   } catch (error) {
@@ -60,9 +65,14 @@ export const saveProfile = (profile) => {
     return profile;
   }
 
-  window.localStorage.setItem(CURRENT_LEARNER_KEY, profile.learnerName);
-  window.localStorage.setItem(getProfileKey(profile.learnerName), JSON.stringify(profile));
-  return profile;
+  const nextProfile = {
+    ...profile,
+    schemaVersion: PROFILE_SCHEMA_VERSION,
+  };
+
+  window.localStorage.setItem(CURRENT_LEARNER_KEY, nextProfile.learnerName);
+  window.localStorage.setItem(getProfileKey(nextProfile.learnerName), JSON.stringify(nextProfile));
+  return nextProfile;
 };
 
 export const renameProfile = (nextLearnerName) => {
