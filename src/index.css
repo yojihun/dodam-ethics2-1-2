@@ -500,6 +500,10 @@ p {
   gap: 24px;
 }
 
+.chapter-main--full {
+  grid-column: 1 / -1;
+}
+
 .focus-card,
 .tabs-card {
   border-radius: 32px;

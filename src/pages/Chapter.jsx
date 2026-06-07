@@ -349,10 +349,21 @@ export default function Chapter() {
   ]);
 
   useEffect(() => {
-    const nextCardObjectiveOrder = shuffleItems(selectedFlashcards.map((card) => card.id));
-    const nextCardSubjectiveOrder = shuffleItems(selectedFlashcards.map((card) => card.id));
-    const nextQuizOrder = shuffleItems(selectedQuizzes.map((quiz) => quiz.id));
-    const nextSubjectiveOrder = shuffleItems(selectedSubjectives.map((quiz) => quiz.id));
+    const activeChapter = chapters.find((item) => item.id === chapterId) ?? chapters[0];
+    const nextFlashcards = activeChapter.sections.flatMap((section) =>
+      section.subsections.flatMap((subsection) =>
+        subsection.flashcards.map((card, index) => ({
+          ...card,
+          id: `${subsection.id}-flash-${index}`,
+        }))
+      )
+    );
+    const nextQuizzes = quizzes.filter((quiz) => quiz.chapterId === activeChapter.id);
+    const nextSubjectives = activeChapter.subjectiveQuizzes;
+    const nextCardObjectiveOrder = shuffleItems(nextFlashcards.map((card) => card.id));
+    const nextCardSubjectiveOrder = shuffleItems(nextFlashcards.map((card) => card.id));
+    const nextQuizOrder = shuffleItems(nextQuizzes.map((quiz) => quiz.id));
+    const nextSubjectiveOrder = shuffleItems(nextSubjectives.map((quiz) => quiz.id));
 
     const frameId = window.requestAnimationFrame(() => {
       setCardIndex(0);
@@ -370,7 +381,7 @@ export default function Chapter() {
     });
 
     return () => window.cancelAnimationFrame(frameId);
-  }, [chapter.id, selectedFlashcards, selectedQuizzes, selectedSubjectives]);
+  }, [chapterId]);
 
   const isBlankQuestionCorrect = (question, key) => {
     const values = blankAnswers[key] ?? [];
